@@ -34,8 +34,8 @@ type GeminiCommand = {
   displayPath: string;
 };
 
-const CHUNK_TARGET_CHARS = 6000;
-const SINGLE_SHOT_LIMIT = 14000;
+const CHUNK_TARGET_CHARS = 3500;
+const SINGLE_SHOT_LIMIT = 4500;
 
 export async function checkGemini(): Promise<GeminiStatus> {
   try {
@@ -238,7 +238,7 @@ export function buildCoursePrompt(
 ): string {
   const sourceLine = input.url ? `Source URL: ${input.url}` : "Source: pasted article text";
   const chunkLine = options.chunkInfo
-    ? `This is chunk ${options.chunkInfo.index} of ${options.chunkInfo.total} of one article. Only produce sentence/vocab/exercise items for THIS chunk's text; still fill in summary/keyIdeas based on this chunk.`
+    ? `This is chunk ${options.chunkInfo.index} of ${options.chunkInfo.total} of one article. Only produce sentence/vocab/exercise items for THIS chunk's text; produce one entry per sentence in this chunk; still fill in summary/keyIdeas based on this chunk.`
     : "";
   return `
 You are an expert English teacher for Khmer-speaking learners.
@@ -258,7 +258,7 @@ Match this exact JSON shape (omit OPTIONAL keys only if they don't apply; do not
   "tenseOverview": "English overview of main tenses used",
   "discussionQuestions": ["3-5 open-ended discussion questions in English"],   // OPTIONAL but recommended
   "writingPrompt": "one short writing prompt connected to the article",         // OPTIONAL but recommended
-  "sentences": [
+  "sentences": [                                                                 // one entry per article sentence, in order
     {
       "english": "article sentence or lightly edited sentence",
       "simplifiedEnglish": "easier rewrite for the learner",                   // OPTIONAL
@@ -309,7 +309,9 @@ Level guidance (CEFR ${input.level}):
 ${levelGuidance(input.level)}
 
 Requirements:
-- Include 8-14 useful sentences unless the article is short.
+- Produce ONE entry in "sentences" for EVERY sentence in the article (or chunk) in original order. Do not skip, merge, or summarise sentences.
+- If the article uses a long sentence joined by semicolons or "and", keep it as ONE entry — split only at full stops, question marks, or exclamation marks.
+- Section headings or photo captions in the article body count as sentences; figure credits and "Read more" links do not.
 - Translate every sentence to natural Khmer.
 - Explain grammar and tense in Khmer for every sentence.
 - Extract 2-5 vocabulary items per sentence.

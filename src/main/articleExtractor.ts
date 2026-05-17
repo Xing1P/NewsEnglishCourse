@@ -45,7 +45,7 @@ function extractBestText($: cheerio.CheerioAPI): string {
     .find("p")
     .map((_, element) => $(element).text().replace(/\s+/g, " ").trim())
     .get()
-    .filter((paragraph) => paragraph.length > 60);
+    .filter((paragraph) => paragraph.length > 25);
   return paragraphs.join("\n\n").trim();
 }
 
@@ -68,7 +68,7 @@ function extractByLargestCluster($: cheerio.CheerioAPI): string {
     .find("p")
     .map((_, p) => $(p).text().replace(/\s+/g, " ").trim())
     .get()
-    .filter((p) => p.length > 60)
+    .filter((p) => p.length > 25)
     .join("\n\n")
     .trim();
 }
