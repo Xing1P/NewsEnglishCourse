@@ -101,6 +101,25 @@ describe("App", () => {
 
     await waitFor(() => expect(window.newsEnglish.course.generate).toHaveBeenCalled());
     expect(await screen.findByText("Sentence study")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Vocabulary" })).toBeInTheDocument();
+    expect(screen.getAllByText("policy").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("គោលនយោបាយ").length).toBeGreaterThan(0);
+    expect(screen.getByText("a plan or rule")).toBeInTheDocument();
+    expect(screen.getByText("The policy changed.")).toBeInTheDocument();
+    expect(screen.getByText("គោលនយោបាយបានផ្លាស់ប្តូរ។")).toBeInTheDocument();
+  });
+
+  it("jumps from course vocabulary to its source sentence", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/news article or url/i), "This is a long enough article about a policy update.");
+    await user.click(screen.getByRole("button", { name: /^generate$/i }));
+
+    await screen.findByRole("heading", { name: "Vocabulary" });
+    await user.click(screen.getByRole("button", { name: /Sentence 1/i }));
+
+    expect(document.getElementById("sentence-sentence-1")).toHaveClass("bg-gold/10");
   });
 
   it("opens vocabulary and links back to the source course", async () => {
@@ -114,4 +133,3 @@ describe("App", () => {
     expect(await screen.findByText("Sentence study")).toBeInTheDocument();
   });
 });
-

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GeneratedCourseSchema, type GenerateCourseInput, type GeneratedCourse, type GeminiStatus } from "../shared/schemas";
@@ -9,13 +9,19 @@ type GeminiJsonResult = {
   error?: { message?: string };
 };
 
+type GeminiCommand = {
+  command: string;
+  argsPrefix: string[];
+  displayPath: string;
+};
+
 export async function checkGemini(): Promise<GeminiStatus> {
   try {
-    const firstPath = await resolveGeminiPath();
-    const version = await runGeminiCommand(["--version"], firstPath, 7000).catch(() => null);
+    const command = await resolveGeminiCommand();
+    const version = await runGeminiCommand(["--version"], command, 15000).catch(() => null);
     return {
-      installed: Boolean(firstPath),
-      path: firstPath,
+      installed: Boolean(command.displayPath),
+      path: command.displayPath,
       version: version?.stdout.trim() || null,
       error: null
     };
@@ -135,8 +141,8 @@ ${raw}
 async function runGeminiJson(prompt: string, articleText?: string): Promise<GeminiJsonResult> {
   const { promptArg, cleanup } = createPromptArg(prompt, articleText);
   try {
-    const geminiPath = await resolveGeminiPath();
-    const result = await runGeminiCommand(["-p", promptArg, "--output-format", "json"], geminiPath, 180000);
+    const command = await resolveGeminiCommand();
+    const result = await runGeminiCommand(["-p", promptArg, "--output-format", "json"], command, 600000);
     const parsed = JSON.parse(result.stdout) as GeminiJsonResult;
     if (parsed.error?.message) {
       throw new Error(parsed.error.message);
@@ -174,19 +180,20 @@ function extractJson(raw: string): string {
   return trimmed;
 }
 
-async function resolveGeminiPath(): Promise<string> {
+async function resolveGeminiCommand(): Promise<GeminiCommand> {
   if (process.platform === "win32") {
-    const lookup = await runCommand(
-      "powershell.exe",
-      ["-NoProfile", "-Command", "(Get-Command gemini -ErrorAction Stop).Source"],
-      { timeoutMs: 7000 }
-    );
-    const path = lookup.stdout
+    const command = resolveWindowsGeminiCommand();
+    if (command) return command;
+
+    const lookup = await runCommand("where.exe", ["gemini.cmd"], { timeoutMs: 7000 }).catch(() => null);
+    const cmdPath = lookup?.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
       .find(Boolean);
-    if (!path) throw new Error("Gemini CLI was not found in PowerShell.");
-    return path;
+    if (cmdPath) {
+      return { command: "cmd.exe", argsPrefix: ["/d", "/s", "/c", cmdPath], displayPath: cmdPath };
+    }
+    throw new Error("Gemini CLI was not found. Install it with npm or make gemini.cmd available on PATH.");
   }
 
   const lookup = await runCommand("which", ["gemini"], { timeoutMs: 7000 });
@@ -195,20 +202,41 @@ async function resolveGeminiPath(): Promise<string> {
     .map((line) => line.trim())
     .find(Boolean);
   if (!path) throw new Error("Gemini CLI was not found on PATH.");
-  return path;
+  return { command: path, argsPrefix: [], displayPath: path };
 }
 
 function runGeminiCommand(
   args: string[],
-  geminiPath: string,
+  gemini: GeminiCommand,
   timeoutMs: number
 ): Promise<{ stdout: string; stderr: string }> {
-  if (process.platform === "win32" && geminiPath.toLowerCase().endsWith(".ps1")) {
-    return runCommand("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", geminiPath, ...args], {
-      timeoutMs
-    });
+  return runCommand(gemini.command, [...gemini.argsPrefix, ...args], { timeoutMs });
+}
+
+function resolveWindowsGeminiCommand(): GeminiCommand | null {
+  const npmRoots = [
+    process.env.APPDATA ? join(process.env.APPDATA, "npm") : null,
+    process.env.npm_config_prefix ?? null
+  ].filter((value): value is string => Boolean(value));
+
+  for (const root of npmRoots) {
+    const bundlePath = join(root, "node_modules", "@google", "gemini-cli", "bundle", "gemini.js");
+    if (existsSync(bundlePath)) {
+      const localNode = join(root, "node.exe");
+      return {
+        command: existsSync(localNode) ? localNode : "node.exe",
+        argsPrefix: [bundlePath],
+        displayPath: bundlePath
+      };
+    }
+
+    const cmdPath = join(root, "gemini.cmd");
+    if (existsSync(cmdPath)) {
+      return { command: "cmd.exe", argsPrefix: ["/d", "/s", "/c", cmdPath], displayPath: cmdPath };
+    }
   }
-  return runCommand(geminiPath, args, { timeoutMs });
+
+  return null;
 }
 
 function runCommand(
@@ -220,7 +248,10 @@ function runCommand(
     const child = spawn(command, args, {
       shell: false,
       windowsHide: true,
-      env: process.env
+      env: {
+        ...process.env,
+        GEMINI_CLI_TRUST_WORKSPACE: "true"
+      }
     });
     let stdout = "";
     let stderr = "";

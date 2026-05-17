@@ -350,10 +350,34 @@ function CourseScreen({
   highlightSentenceId: string | null;
   onVocabularyChanged: () => Promise<void>;
 }): ReactElement {
+  const [localHighlightSentenceId, setLocalHighlightSentenceId] = useState<string | null>(null);
+  const courseVocabulary = useMemo(
+    () =>
+      course.sentences.flatMap((sentence, index) =>
+        sentence.vocabulary.map((item) => ({
+          ...item,
+          sentenceNumber: index + 1,
+          sourceSentenceId: sentence.id
+        }))
+      ),
+    [course.sentences]
+  );
+
   useEffect(() => {
     if (!highlightSentenceId) return;
     document.getElementById(`sentence-${highlightSentenceId}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    setLocalHighlightSentenceId(highlightSentenceId);
   }, [highlightSentenceId, course.id]);
+
+  const toggleVocabulary = async (item: StoredVocabulary): Promise<void> => {
+    await window.newsEnglish.vocabulary.setBookmarked(item.id, !item.isBookmarked);
+    await onVocabularyChanged();
+  };
+
+  const scrollToSentence = (sentenceId: string): void => {
+    setLocalHighlightSentenceId(sentenceId);
+    document.getElementById(`sentence-${sentenceId}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
 
   return (
     <article>
@@ -394,7 +418,7 @@ function CourseScreen({
               id={`sentence-${sentence.id}`}
               key={sentence.id}
               className={`grid gap-4 p-5 transition lg:grid-cols-[42px_minmax(0,1fr)_minmax(280px,36%)] ${
-                highlightSentenceId === sentence.id ? "bg-gold/10" : "bg-white"
+                localHighlightSentenceId === sentence.id ? "bg-gold/10" : "bg-white"
               }`}
             >
               <div className="grid h-9 w-9 place-items-center rounded-lg bg-paper text-sm font-semibold text-ink/60">
@@ -402,7 +426,7 @@ function CourseScreen({
               </div>
               <div>
                 <p className="text-base font-semibold leading-7">{sentence.english}</p>
-                <p className="mt-2 text-base leading-8 text-ink/75">{sentence.khmer}</p>
+                <p className="khmer-text mt-2 text-base text-ink/75">{sentence.khmer}</p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {sentence.vocabulary.map((item) => (
                     <button
@@ -413,8 +437,7 @@ function CourseScreen({
                           : "border-ink/10 bg-paper text-ink/60"
                       }`}
                       onClick={async () => {
-                        await window.newsEnglish.vocabulary.setBookmarked(item.id, !item.isBookmarked);
-                        await onVocabularyChanged();
+                        await toggleVocabulary(item);
                       }}
                       type="button"
                       title={item.khmer}
@@ -426,11 +449,64 @@ function CourseScreen({
               </div>
               <div className="rounded-lg bg-paper p-4">
                 <Badge>{sentence.tense}</Badge>
-                <p className="mt-3 text-sm leading-7 text-ink/70">{sentence.grammarExplanationKm}</p>
+                <p className="khmer-text mt-3 text-sm text-ink/70">{sentence.grammarExplanationKm}</p>
               </div>
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="mt-6 rounded-lg border border-ink/10 bg-white shadow-panel">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/10 px-5 py-4">
+          <div>
+            <h2 className="text-lg font-semibold">Vocabulary</h2>
+            <p className="mt-1 text-sm text-ink/55">{courseVocabulary.length} words from this course</p>
+          </div>
+          <Badge>{course.vocabularyCount} saved</Badge>
+        </div>
+        {courseVocabulary.length ? (
+          <div className="grid gap-4 p-5 xl:grid-cols-2">
+            {courseVocabulary.map((item) => (
+              <article key={item.id} className="rounded-lg border border-ink/10 bg-paper p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-xl font-semibold">{item.word}</h3>
+                      <Badge>{item.partOfSpeech}</Badge>
+                    </div>
+                    <p className="khmer-text mt-1 text-sm font-semibold text-teal">{item.khmer}</p>
+                  </div>
+                  <button
+                    aria-label={`${item.isBookmarked ? "Remove" : "Add"} ${item.word} bookmark`}
+                    className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg transition ${
+                      item.isBookmarked ? "bg-gold/15 text-gold" : "bg-white text-ink/40 hover:text-gold"
+                    }`}
+                    onClick={() => toggleVocabulary(item)}
+                    type="button"
+                  >
+                    <Star size={17} fill={item.isBookmarked ? "currentColor" : "none"} />
+                  </button>
+                </div>
+                <p className="mt-3 text-sm leading-6 text-ink/65">{item.definitionEn}</p>
+                <div className="mt-4 rounded-lg bg-white p-3 text-sm leading-6">
+                  <p className="font-medium">{item.exampleEn}</p>
+                  <p className="khmer-text mt-1 text-ink/65">{item.exampleKm}</p>
+                </div>
+                <button
+                  className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-teal"
+                  onClick={() => scrollToSentence(item.sourceSentenceId)}
+                  type="button"
+                >
+                  Sentence {item.sentenceNumber} <ChevronRight size={15} />
+                </button>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="p-5">
+            <EmptyState title="No vocabulary in this course" detail="Generate again with a richer article to extract words." />
+          </div>
+        )}
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-2">
@@ -453,7 +529,7 @@ function CourseScreen({
               </div>
             ) : null}
             <p className="mt-4 text-sm font-semibold">Answer: {exercise.answer}</p>
-            <p className="mt-2 text-sm leading-6 text-ink/65">{exercise.explanationKm}</p>
+            <p className="khmer-text mt-2 text-sm text-ink/65">{exercise.explanationKm}</p>
           </div>
         ))}
       </section>
@@ -489,7 +565,7 @@ function VocabularyScreen({
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-2xl font-semibold">{item.word}</p>
-                <p className="mt-1 text-sm font-medium text-teal">{item.khmer}</p>
+                <p className="khmer-text mt-1 text-sm font-medium text-teal">{item.khmer}</p>
               </div>
               <button
                 aria-label={`Remove ${item.word} bookmark`}
@@ -507,7 +583,7 @@ function VocabularyScreen({
             <p className="mt-3 text-sm leading-6 text-ink/65">{item.definitionEn}</p>
             <div className="mt-4 rounded-lg bg-paper p-3 text-sm leading-6">
               <p className="font-medium">{item.exampleEn}</p>
-              <p className="mt-1 text-ink/65">{item.exampleKm}</p>
+              <p className="khmer-text mt-1 text-ink/65">{item.exampleKm}</p>
             </div>
             <button
               className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-teal"
