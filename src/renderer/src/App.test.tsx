@@ -1,0 +1,117 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import App from "./App";
+import type { NewsEnglishApi } from "../../shared/ipc";
+import type { StoredCourse } from "../../shared/schemas";
+
+const storedCourse: StoredCourse = {
+  id: "course-1",
+  title: "Climate Course",
+  sourceType: "text",
+  sourceUrl: null,
+  sourceTextPreview: "Climate article",
+  level: "B1-B2",
+  summary: "A course about climate news.",
+  createdAt: new Date("2026-05-17T00:00:00Z").toISOString(),
+  updatedAt: new Date("2026-05-17T00:00:00Z").toISOString(),
+  vocabularyCount: 1,
+  articleTitle: "Climate news",
+  originalText: "Climate changed policy discussions.",
+  simplifiedSummary: "Leaders talked about climate.",
+  keyIdeas: ["Leaders talked", "Climate policy changed"],
+  grammarFocus: "Past simple",
+  tenseOverview: "Mostly past simple",
+  sentences: [
+    {
+      id: "sentence-1",
+      courseId: "course-1",
+      order: 0,
+      english: "Leaders discussed climate policy.",
+      khmer: "មេដឹកនាំបានពិភាក្សាអំពីគោលនយោបាយអាកាសធាតុ។",
+      tense: "Past simple",
+      grammarExplanationKm: "ប្រើ past simple សម្រាប់សកម្មភាពដែលបានកើតឡើង។",
+      vocabulary: [
+        {
+          id: "word-1",
+          courseId: "course-1",
+          sentenceId: "sentence-1",
+          courseTitle: "Climate Course",
+          word: "policy",
+          partOfSpeech: "noun",
+          khmer: "គោលនយោបាយ",
+          definitionEn: "a plan or rule",
+          exampleEn: "The policy changed.",
+          exampleKm: "គោលនយោបាយបានផ្លាស់ប្តូរ។",
+          isBookmarked: true,
+          createdAt: new Date("2026-05-17T00:00:00Z").toISOString()
+        }
+      ]
+    }
+  ],
+  exercises: [
+    {
+      id: "exercise-1",
+      courseId: "course-1",
+      type: "quiz",
+      prompt: "What did leaders discuss?",
+      choices: ["Climate policy", "Sports"],
+      answer: "Climate policy",
+      explanationKm: "អត្ថបទនិយាយអំពីគោលនយោបាយអាកាសធាតុ។"
+    }
+  ]
+};
+
+function mockApi(overrides: Partial<NewsEnglishApi> = {}): void {
+  window.newsEnglish = {
+    course: {
+      generate: vi.fn().mockResolvedValue(storedCourse),
+      list: vi.fn().mockResolvedValue([storedCourse]),
+      get: vi.fn().mockResolvedValue(storedCourse),
+      delete: vi.fn().mockResolvedValue({ ok: true })
+    },
+    vocabulary: {
+      list: vi.fn().mockResolvedValue(storedCourse.sentences[0].vocabulary),
+      setBookmarked: vi.fn().mockResolvedValue({ ok: true })
+    },
+    system: {
+      checkGemini: vi.fn().mockResolvedValue({ installed: true, path: "gemini", version: "1.0.0", error: null })
+    },
+    ...overrides
+  } as NewsEnglishApi;
+}
+
+beforeEach(() => {
+  mockApi();
+});
+
+describe("App", () => {
+  it("renders the home generator", async () => {
+    render(<App />);
+    expect(await screen.findByText("Course Generator")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate/i })).toBeDisabled();
+  });
+
+  it("generates a course from text", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/news article or url/i), "This is a long enough article about a policy update.");
+    await user.click(screen.getByRole("button", { name: /^generate$/i }));
+
+    await waitFor(() => expect(window.newsEnglish.course.generate).toHaveBeenCalled());
+    expect(await screen.findByText("Sentence study")).toBeInTheDocument();
+  });
+
+  it("opens vocabulary and links back to the source course", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Vocabulary" }));
+    expect(await screen.findByText("policy")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Climate Course/i }));
+
+    expect(await screen.findByText("Sentence study")).toBeInTheDocument();
+  });
+});
+
