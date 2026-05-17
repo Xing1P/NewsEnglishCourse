@@ -68,11 +68,24 @@ function mockApi(overrides: Partial<NewsEnglishApi> = {}): void {
       generate: vi.fn().mockResolvedValue(storedCourse),
       list: vi.fn().mockResolvedValue([storedCourse]),
       get: vi.fn().mockResolvedValue(storedCourse),
-      delete: vi.fn().mockResolvedValue({ ok: true })
+      delete: vi.fn().mockResolvedValue({ ok: true }),
+      regenerateExercises: vi.fn().mockResolvedValue(storedCourse),
+      exportAnki: vi.fn().mockResolvedValue({ ok: true, path: "/tmp/x.txt" }),
+      exportMarkdown: vi.fn().mockResolvedValue({ ok: true, path: "/tmp/x.md" })
     },
     vocabulary: {
       list: vi.fn().mockResolvedValue(storedCourse.sentences[0].vocabulary),
-      setBookmarked: vi.fn().mockResolvedValue({ ok: true })
+      setBookmarked: vi.fn().mockResolvedValue({ ok: true }),
+      deepen: vi.fn().mockResolvedValue(storedCourse.sentences[0].vocabulary[0])
+    },
+    sentence: {
+      simplify: vi.fn().mockResolvedValue({ simplifiedEnglish: "Leaders talked.", khmer: "មេដឹកនាំបាននិយាយ។" }),
+      explain: vi.fn().mockResolvedValue({ answerEn: "ok", answerKm: "ok" })
+    },
+    review: {
+      due: vi.fn().mockResolvedValue([]),
+      grade: vi.fn().mockResolvedValue({ ok: true }),
+      stats: vi.fn().mockResolvedValue({ dueCount: 0, reviewedToday: 0, streakDays: 0 })
     },
     system: {
       checkGemini: vi.fn().mockResolvedValue({ installed: true, path: "gemini", version: "1.0.0", error: null })

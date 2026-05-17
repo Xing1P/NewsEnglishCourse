@@ -2,14 +2,24 @@ import { nanoid } from "nanoid";
 import type { AppDatabase } from "./database";
 import type {
   CourseSummary,
+  ExerciseType,
+  Frequency,
   GenerateCourseInput,
   GeneratedCourse,
+  PartialVocabularyEnrichment,
+  Register,
+  ReviewCard,
+  SentenceDifficulty,
   StoredCourse,
   StoredExercise,
   StoredSentence,
   StoredVocabulary,
   VocabularyListInput
 } from "../shared/schemas";
+
+type Idiom = { phrase: string; meaningEn: string; khmer: string };
+type PhrasalVerb = { phrase: string; meaningEn: string; khmer: string };
+type MatchingPair = { left: string; right: string };
 
 type CourseRow = Omit<CourseSummary, "vocabularyCount"> & { vocabularyCount: number };
 
@@ -21,6 +31,8 @@ type SectionRow = {
   keyIdeas: string;
   grammarFocus: string;
   tenseOverview: string;
+  discussionQuestionsJson: string | null;
+  writingPrompt: string | null;
 };
 
 type SentenceRow = {
@@ -32,6 +44,13 @@ type SentenceRow = {
   tense: string;
   grammarExplanationKm: string;
   vocabularyIds: string;
+  simplifiedEnglish: string | null;
+  difficulty: string | null;
+  pronunciationIpa: string | null;
+  collocationsJson: string | null;
+  phrasalVerbsJson: string | null;
+  idiomsJson: string | null;
+  registerCode: string | null;
 };
 
 type VocabularyRow = {
@@ -47,16 +66,44 @@ type VocabularyRow = {
   exampleKm: string;
   isBookmarked: number;
   createdAt: string;
+  ipa: string | null;
+  cefrLevel: string | null;
+  synonymsJson: string | null;
+  antonymsJson: string | null;
+  frequency: string | null;
+  collocationsJson: string | null;
 };
 
 type ExerciseRow = {
   id: string;
   courseId: string;
-  type: "quiz" | "cloze";
+  type: string;
   prompt: string;
   choicesJson: string;
   answer: string;
   explanationKm: string;
+  pairsJson: string | null;
+  itemsJson: string | null;
+};
+
+type ReviewRow = {
+  vocabularyId: string;
+  easeFactor: number;
+  intervalDays: number;
+  dueAt: string;
+  lastReviewedAt: string | null;
+  streak: number;
+  repetitions: number;
+};
+
+export type ReviewState = {
+  vocabularyId: string;
+  easeFactor: number;
+  intervalDays: number;
+  dueAt: string;
+  lastReviewedAt: string | null;
+  streak: number;
+  repetitions: number;
 };
 
 export class CourseRepository {
@@ -80,8 +127,9 @@ export class CourseRepository {
       this.db
         .prepare(
           `INSERT INTO course_sections
-            (courseId, articleTitle, originalText, simplifiedSummary, keyIdeas, grammarFocus, tenseOverview)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+            (courseId, articleTitle, originalText, simplifiedSummary, keyIdeas, grammarFocus, tenseOverview,
+             discussionQuestionsJson, writingPrompt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -90,24 +138,28 @@ export class CourseRepository {
           course.simplifiedSummary,
           JSON.stringify(course.keyIdeas),
           course.grammarFocus,
-          course.tenseOverview
+          course.tenseOverview,
+          course.discussionQuestions ? JSON.stringify(course.discussionQuestions) : null,
+          course.writingPrompt ?? null
         );
 
       const sentenceInsert = this.db.prepare(
         `INSERT INTO sentences
-          (id, courseId, sentenceOrder, english, khmer, tense, grammarExplanationKm, vocabularyIds)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          (id, courseId, sentenceOrder, english, khmer, tense, grammarExplanationKm, vocabularyIds,
+           simplifiedEnglish, difficulty, pronunciationIpa, collocationsJson, phrasalVerbsJson, idiomsJson, registerCode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const vocabularyInsert = this.db.prepare(
         `INSERT INTO vocabulary
-          (id, courseId, sentenceId, word, partOfSpeech, khmer, definitionEn, exampleEn, exampleKm, isBookmarked, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (id, courseId, sentenceId, word, partOfSpeech, khmer, definitionEn, exampleEn, exampleKm,
+           isBookmarked, createdAt, ipa, cefrLevel, synonymsJson, antonymsJson, frequency, collocationsJson)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const sentenceVocabularyUpdate = this.db.prepare("UPDATE sentences SET vocabularyIds = ? WHERE id = ?");
       const exerciseInsert = this.db.prepare(
         `INSERT INTO exercises
-          (id, courseId, type, prompt, choicesJson, answer, explanationKm)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+          (id, courseId, type, prompt, choicesJson, answer, explanationKm, pairsJson, itemsJson)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
 
       course.sentences.forEach((sentence, index) => {
@@ -120,7 +172,14 @@ export class CourseRepository {
           sentence.khmer,
           sentence.tense,
           sentence.grammarExplanationKm,
-          "[]"
+          "[]",
+          sentence.simplifiedEnglish ?? null,
+          sentence.difficulty ?? null,
+          sentence.pronunciationIpa ?? null,
+          sentence.collocations ? JSON.stringify(sentence.collocations) : null,
+          sentence.phrasalVerbs ? JSON.stringify(sentence.phrasalVerbs) : null,
+          sentence.idioms ? JSON.stringify(sentence.idioms) : null,
+          sentence.register ?? null
         );
 
         const vocabularyIds = sentence.vocabulary.map((item) => {
@@ -136,7 +195,13 @@ export class CourseRepository {
             item.exampleEn,
             item.exampleKm,
             1,
-            now
+            now,
+            item.ipa ?? null,
+            item.cefrLevel ?? null,
+            item.synonyms ? JSON.stringify(item.synonyms) : null,
+            item.antonyms ? JSON.stringify(item.antonyms) : null,
+            item.frequency ?? null,
+            item.collocations ? JSON.stringify(item.collocations) : null
           );
           return vocabularyId;
         });
@@ -151,7 +216,9 @@ export class CourseRepository {
           exercise.prompt,
           JSON.stringify(exercise.choices),
           exercise.answer,
-          exercise.explanationKm
+          exercise.explanationKm,
+          exercise.pairs ? JSON.stringify(exercise.pairs) : null,
+          exercise.items ? JSON.stringify(exercise.items) : null
         );
       });
     });
@@ -189,8 +256,21 @@ export class CourseRepository {
       .get(id) as CourseRow | undefined;
     if (!course) return null;
 
-    const section = this.db.prepare("SELECT * FROM course_sections WHERE courseId = ?").get(id) as SectionRow;
-    const vocabulary = this.listVocabulary({}).filter((item) => item.courseId === id);
+    const section = this.db
+      .prepare("SELECT * FROM course_sections WHERE courseId = ?")
+      .get(id) as SectionRow;
+
+    const vocabRows = this.db
+      .prepare(
+        `SELECT v.*, c.title AS courseTitle
+         FROM vocabulary v
+         JOIN courses c ON c.id = v.courseId
+         WHERE v.courseId = ?
+         ORDER BY v.createdAt ASC, lower(v.word) ASC`
+      )
+      .all(id) as VocabularyRow[];
+    const vocabulary = vocabRows.map(toVocabulary);
+
     const vocabularyBySentence = new Map<string, StoredVocabulary[]>();
     vocabulary.forEach((item) => {
       if (!item.sentenceId) return;
@@ -208,7 +288,14 @@ export class CourseRepository {
       khmer: row.khmer,
       tense: row.tense,
       grammarExplanationKm: row.grammarExplanationKm,
-      vocabulary: vocabularyBySentence.get(row.id) ?? []
+      vocabulary: vocabularyBySentence.get(row.id) ?? [],
+      simplifiedEnglish: row.simplifiedEnglish ?? undefined,
+      difficulty: (row.difficulty as SentenceDifficulty | null) ?? undefined,
+      pronunciationIpa: row.pronunciationIpa ?? undefined,
+      collocations: parseStringArrayOrUndefined(row.collocationsJson),
+      phrasalVerbs: parseJsonOrUndefined<PhrasalVerb[]>(row.phrasalVerbsJson),
+      idioms: parseJsonOrUndefined<Idiom[]>(row.idiomsJson),
+      register: (row.registerCode as Register | null) ?? undefined
     }));
 
     const exerciseRows = this.db
@@ -217,11 +304,13 @@ export class CourseRepository {
     const exercises: StoredExercise[] = exerciseRows.map((row) => ({
       id: row.id,
       courseId: row.courseId,
-      type: row.type,
+      type: row.type as ExerciseType,
       prompt: row.prompt,
       choices: parseJsonArray(row.choicesJson),
       answer: row.answer,
-      explanationKm: row.explanationKm
+      explanationKm: row.explanationKm,
+      pairs: parseJsonOrUndefined<MatchingPair[]>(row.pairsJson),
+      items: parseJsonOrUndefined<string[]>(row.itemsJson)
     }));
 
     return {
@@ -234,7 +323,9 @@ export class CourseRepository {
       grammarFocus: section.grammarFocus,
       tenseOverview: section.tenseOverview,
       sentences,
-      exercises
+      exercises,
+      discussionQuestions: parseStringArrayOrUndefined(section.discussionQuestionsJson),
+      writingPrompt: section.writingPrompt ?? undefined
     };
   }
 
@@ -266,15 +357,254 @@ export class CourseRepository {
     return rows.map(toVocabulary);
   }
 
+  getVocabulary(id: string): StoredVocabulary | null {
+    const row = this.db
+      .prepare(
+        `SELECT v.*, c.title AS courseTitle
+         FROM vocabulary v
+         JOIN courses c ON c.id = v.courseId
+         WHERE v.id = ?`
+      )
+      .get(id) as VocabularyRow | undefined;
+    return row ? toVocabulary(row) : null;
+  }
+
   setVocabularyBookmarked(id: string, value: boolean): void {
     this.db.prepare("UPDATE vocabulary SET isBookmarked = ? WHERE id = ?").run(value ? 1 : 0, id);
   }
+
+  mergeVocabularyEnrichment(id: string, enrichment: PartialVocabularyEnrichment): void {
+    const current = this.getVocabulary(id);
+    if (!current) return;
+    const merged = {
+      ipa: enrichment.ipa ?? current.ipa ?? null,
+      cefrLevel: enrichment.cefrLevel ?? current.cefrLevel ?? null,
+      synonymsJson: enrichment.synonyms
+        ? JSON.stringify(mergeUnique(current.synonyms, enrichment.synonyms))
+        : current.synonyms
+          ? JSON.stringify(current.synonyms)
+          : null,
+      antonymsJson: enrichment.antonyms
+        ? JSON.stringify(mergeUnique(current.antonyms, enrichment.antonyms))
+        : current.antonyms
+          ? JSON.stringify(current.antonyms)
+          : null,
+      frequency: enrichment.frequency ?? current.frequency ?? null,
+      collocationsJson: enrichment.collocations
+        ? JSON.stringify(mergeUnique(current.collocations, enrichment.collocations))
+        : current.collocations
+          ? JSON.stringify(current.collocations)
+          : null
+    };
+    this.db
+      .prepare(
+        `UPDATE vocabulary
+         SET ipa = ?, cefrLevel = ?, synonymsJson = ?, antonymsJson = ?, frequency = ?, collocationsJson = ?
+         WHERE id = ?`
+      )
+      .run(
+        merged.ipa,
+        merged.cefrLevel,
+        merged.synonymsJson,
+        merged.antonymsJson,
+        merged.frequency,
+        merged.collocationsJson,
+        id
+      );
+  }
+
+  setSentenceSimplified(sentenceId: string, simplifiedEnglish: string): void {
+    this.db
+      .prepare("UPDATE sentences SET simplifiedEnglish = ? WHERE id = ?")
+      .run(simplifiedEnglish, sentenceId);
+  }
+
+  getSentence(sentenceId: string): StoredSentence | null {
+    const row = this.db
+      .prepare("SELECT * FROM sentences WHERE id = ?")
+      .get(sentenceId) as SentenceRow | undefined;
+    if (!row) return null;
+    const vocab = this.db
+      .prepare(
+        `SELECT v.*, c.title AS courseTitle
+         FROM vocabulary v
+         JOIN courses c ON c.id = v.courseId
+         WHERE v.sentenceId = ?`
+      )
+      .all(sentenceId) as VocabularyRow[];
+    return {
+      id: row.id,
+      courseId: row.courseId,
+      order: row.sentenceOrder,
+      english: row.english,
+      khmer: row.khmer,
+      tense: row.tense,
+      grammarExplanationKm: row.grammarExplanationKm,
+      vocabulary: vocab.map(toVocabulary),
+      simplifiedEnglish: row.simplifiedEnglish ?? undefined,
+      difficulty: (row.difficulty as SentenceDifficulty | null) ?? undefined,
+      pronunciationIpa: row.pronunciationIpa ?? undefined,
+      collocations: parseStringArrayOrUndefined(row.collocationsJson),
+      phrasalVerbs: parseJsonOrUndefined<PhrasalVerb[]>(row.phrasalVerbsJson),
+      idioms: parseJsonOrUndefined<Idiom[]>(row.idiomsJson),
+      register: (row.registerCode as Register | null) ?? undefined
+    };
+  }
+
+  appendExercises(
+    courseId: string,
+    exercises: Array<{
+      type: ExerciseType;
+      prompt: string;
+      choices: string[];
+      answer: string;
+      explanationKm: string;
+      pairs?: MatchingPair[];
+      items?: string[];
+    }>,
+    replaceType?: ExerciseType
+  ): void {
+    const insert = this.db.prepare(
+      `INSERT INTO exercises
+        (id, courseId, type, prompt, choicesJson, answer, explanationKm, pairsJson, itemsJson)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const remove = replaceType
+      ? this.db.prepare("DELETE FROM exercises WHERE courseId = ? AND type = ?")
+      : null;
+    const txn = this.db.transaction(() => {
+      if (remove && replaceType) remove.run(courseId, replaceType);
+      for (const e of exercises) {
+        insert.run(
+          nanoid(),
+          courseId,
+          e.type,
+          e.prompt,
+          JSON.stringify(e.choices),
+          e.answer,
+          e.explanationKm,
+          e.pairs ? JSON.stringify(e.pairs) : null,
+          e.items ? JSON.stringify(e.items) : null
+        );
+      }
+    });
+    txn();
+  }
+
+  upsertReview(state: ReviewState): void {
+    this.db
+      .prepare(
+        `INSERT INTO vocabulary_reviews
+          (vocabularyId, easeFactor, intervalDays, dueAt, lastReviewedAt, streak, repetitions)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(vocabularyId) DO UPDATE SET
+           easeFactor = excluded.easeFactor,
+           intervalDays = excluded.intervalDays,
+           dueAt = excluded.dueAt,
+           lastReviewedAt = excluded.lastReviewedAt,
+           streak = excluded.streak,
+           repetitions = excluded.repetitions`
+      )
+      .run(
+        state.vocabularyId,
+        state.easeFactor,
+        state.intervalDays,
+        state.dueAt,
+        state.lastReviewedAt,
+        state.streak,
+        state.repetitions
+      );
+  }
+
+  getReview(vocabularyId: string): ReviewState | null {
+    const row = this.db
+      .prepare("SELECT * FROM vocabulary_reviews WHERE vocabularyId = ?")
+      .get(vocabularyId) as ReviewRow | undefined;
+    return row ?? null;
+  }
+
+  listDueReviews(nowIso: string, limit = 50): ReviewCard[] {
+    const rows = this.db
+      .prepare(
+        `SELECT v.*, c.title AS courseTitle,
+                r.dueAt AS r_dueAt, r.intervalDays AS r_interval, r.easeFactor AS r_ease
+         FROM vocabulary v
+         JOIN courses c ON c.id = v.courseId
+         LEFT JOIN vocabulary_reviews r ON r.vocabularyId = v.id
+         WHERE v.isBookmarked = 1
+           AND (r.dueAt IS NULL OR r.dueAt <= ?)
+         ORDER BY (r.dueAt IS NULL) DESC, r.dueAt ASC, v.createdAt ASC
+         LIMIT ?`
+      )
+      .all(nowIso, limit) as Array<VocabularyRow & { r_dueAt: string | null; r_interval: number | null; r_ease: number | null }>;
+    return rows.map((row) => ({
+      ...toVocabulary(row),
+      dueAt: row.r_dueAt,
+      intervalDays: row.r_interval ?? 0,
+      easeFactor: row.r_ease ?? 2.5
+    }));
+  }
+
+  reviewStats(nowIso: string, startOfTodayIso: string): {
+    dueCount: number;
+    reviewedToday: number;
+  } {
+    const due = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM vocabulary v
+         LEFT JOIN vocabulary_reviews r ON r.vocabularyId = v.id
+         WHERE v.isBookmarked = 1 AND (r.dueAt IS NULL OR r.dueAt <= ?)`
+      )
+      .get(nowIso) as { n: number };
+    const reviewedToday = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM vocabulary_reviews WHERE lastReviewedAt >= ?`
+      )
+      .get(startOfTodayIso) as { n: number };
+    return { dueCount: Number(due.n), reviewedToday: Number(reviewedToday.n) };
+  }
+
+  reviewedDaysDesc(limitDays = 365): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT substr(lastReviewedAt, 1, 10) AS day
+         FROM vocabulary_reviews
+         WHERE lastReviewedAt IS NOT NULL
+         ORDER BY day DESC
+         LIMIT ?`
+      )
+      .all(limitDays) as Array<{ day: string }>;
+    return rows.map((r) => r.day);
+  }
+}
+
+function mergeUnique(existing: string[] | undefined, additions: string[]): string[] {
+  const out = new Set<string>(existing ?? []);
+  additions.forEach((value) => out.add(value));
+  return Array.from(out);
 }
 
 function toVocabulary(row: VocabularyRow): StoredVocabulary {
   return {
-    ...row,
-    isBookmarked: Boolean(row.isBookmarked)
+    id: row.id,
+    courseId: row.courseId,
+    sentenceId: row.sentenceId,
+    courseTitle: row.courseTitle,
+    word: row.word,
+    partOfSpeech: row.partOfSpeech,
+    khmer: row.khmer,
+    definitionEn: row.definitionEn,
+    exampleEn: row.exampleEn,
+    exampleKm: row.exampleKm,
+    isBookmarked: Boolean(row.isBookmarked),
+    createdAt: row.createdAt,
+    ipa: row.ipa ?? undefined,
+    cefrLevel: row.cefrLevel ?? undefined,
+    synonyms: parseStringArrayOrUndefined(row.synonymsJson),
+    antonyms: parseStringArrayOrUndefined(row.antonymsJson),
+    frequency: (row.frequency as Frequency | null) ?? undefined,
+    collocations: parseStringArrayOrUndefined(row.collocationsJson)
   };
 }
 
@@ -287,3 +617,21 @@ function parseJsonArray(value: string): string[] {
   }
 }
 
+function parseStringArrayOrUndefined(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJsonOrUndefined<T>(value: string | null): T | undefined {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
