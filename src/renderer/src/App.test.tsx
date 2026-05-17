@@ -90,6 +90,8 @@ describe("App", () => {
     render(<App />);
     expect(await screen.findByText("Course Generator")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /generate/i })).toBeDisabled();
+    expect(screen.getByTestId("app-shell")).toHaveClass("h-screen", "overflow-hidden");
+    expect(screen.getByTestId("content-scroll")).toHaveClass("h-screen", "overflow-y-auto");
   });
 
   it("generates a course from text", async () => {

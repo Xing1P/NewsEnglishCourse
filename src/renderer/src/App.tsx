@@ -72,8 +72,8 @@ function App(): ReactElement {
   };
 
   return (
-    <div className="flex min-h-screen bg-paper text-ink">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-ink/10 bg-white/80 px-4 py-5">
+    <div className="flex h-screen overflow-hidden bg-paper text-ink" data-testid="app-shell">
+      <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-ink/10 bg-white/80 px-4 py-5">
         <div className="mb-8 flex items-center gap-3 px-2">
           <div className="grid h-11 w-11 place-items-center rounded-lg bg-teal text-white shadow-panel">
             <GraduationCap size={23} />
@@ -119,7 +119,7 @@ function App(): ReactElement {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1">
+      <main className="h-screen min-w-0 flex-1 overflow-y-auto" data-testid="content-scroll">
         <div className="mx-auto max-w-7xl px-8 py-7">
           {globalError ? <Alert message={globalError} onClose={() => setGlobalError(null)} /> : null}
           {page === "home" ? (
