@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "description": "Desktop app that generates Khmer-supported English courses from news articles.",
   "main": "out/main/index.js",
+  "author": "Phan Piseth <phanpiseth9@gmail.com>",
   "scripts": {
     "dev": "node scripts/electron-vite.cjs dev",
     "build": "tsc --noEmit && electron-vite build",
     "preview": "node scripts/electron-vite.cjs preview",
     "test": "npm run rebuild:node && vitest run && npm run rebuild:electron",
+    "pack:win": "npm run build && electron-builder --win --dir",
+    "build:win": "npm run build && electron-builder --win",
     "rebuild:node": "npm rebuild better-sqlite3 --runtime=node --target=24.13.1",
     "rebuild:electron": "electron-builder install-app-deps",
     "postinstall": "electron-builder install-app-deps"

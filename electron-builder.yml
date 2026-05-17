@@ -1,0 +1,26 @@
+appId: com.newsenglishcourse.app
+productName: News English Course
+copyright: Copyright © 2026 Phan Piseth
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+  - "**/*.node"
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: News English Course
+  artifactName: ${productName} Setup ${version}.${ext}
