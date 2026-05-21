@@ -3,6 +3,11 @@ import { z } from "zod";
 export const CourseLevelSchema = z.enum(["A2-B1", "B1-B2", "B2-C1"]);
 export type CourseLevel = z.infer<typeof CourseLevelSchema>;
 
+export type ArticleExtraction = {
+  title: string;
+  text: string;
+};
+
 export const SentenceDifficultySchema = z.enum(["easy", "medium", "hard"]);
 export type SentenceDifficulty = z.infer<typeof SentenceDifficultySchema>;
 

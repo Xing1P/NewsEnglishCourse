@@ -94,6 +94,18 @@ function registerIpc(): void {
     return repository.saveGeneratedCourse(input, originalText, generated);
   });
 
+  ipcMain.handle("course:crawl", async (_event, rawUrl: unknown) => {
+    if (typeof rawUrl !== "string" || !rawUrl.trim()) {
+      throw new Error("Invalid URL.");
+    }
+    try {
+      return await extractArticleFromUrl(rawUrl.trim());
+    } catch (error) {
+      log.warn("Article crawl failed.", error);
+      return null;
+    }
+  });
+
   ipcMain.handle("course:regenerateExercises", async (_event, raw: unknown) => {
     const payload = raw as { courseId?: string; type?: string; count?: number; replace?: boolean };
     if (!payload || typeof payload.courseId !== "string") throw new Error("Invalid course id.");

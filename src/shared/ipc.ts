@@ -1,4 +1,5 @@
 import type {
+  ArticleExtraction,
   CourseLevel,
   CourseSummary,
   ExerciseType,
@@ -14,6 +15,7 @@ import type {
 
 export type CourseApi = {
   generate(input: GenerateCourseInput): Promise<StoredCourse>;
+  crawl(url: string): Promise<ArticleExtraction | null>;
   list(): Promise<CourseSummary[]>;
   get(id: string): Promise<StoredCourse | null>;
   delete(id: string): Promise<{ ok: true }>;

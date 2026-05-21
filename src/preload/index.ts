@@ -11,6 +11,7 @@ import type { NewsEnglishApi } from "../shared/ipc";
 const api: NewsEnglishApi = {
   course: {
     generate: (input: GenerateCourseInput) => ipcRenderer.invoke("course:generate", input),
+    crawl: (url: string) => ipcRenderer.invoke("course:crawl", url),
     list: () => ipcRenderer.invoke("course:list"),
     get: (id: string) => ipcRenderer.invoke("course:get", id),
     delete: (id: string) => ipcRenderer.invoke("course:delete", id),

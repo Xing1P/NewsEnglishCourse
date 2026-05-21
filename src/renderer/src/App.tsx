@@ -23,6 +23,7 @@ import {
 import type { ReactElement, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  ArticleExtraction,
   CourseLevel,
   CourseSummary,
   ExerciseType,
@@ -236,6 +237,11 @@ function NavButton({
   );
 }
 
+type GeneratePhase =
+  | { kind: "idle" }
+  | { kind: "crawling" }
+  | { kind: "generating"; crawled: ArticleExtraction | null };
+
 function HomeScreen({
   geminiStatus,
   onGenerated,
@@ -247,24 +253,41 @@ function HomeScreen({
 }): ReactElement {
   const [input, setInput] = useState("");
   const [level, setLevel] = useState<CourseLevel>("B1-B2");
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [phase, setPhase] = useState<GeneratePhase>({ kind: "idle" });
   const trimmed = input.trim();
   const looksLikeUrl = /^https?:\/\//i.test(trimmed);
   const canGenerate = trimmed.length > 20 || looksLikeUrl;
+  const isBusy = phase.kind !== "idle";
 
   const generate = async (): Promise<void> => {
     if (!canGenerate) return;
-    setIsGenerating(true);
     onError("");
     try {
-      const payload: GenerateCourseInput = looksLikeUrl ? { url: trimmed, level } : { text: trimmed, level };
+      let payload: GenerateCourseInput;
+      let crawled: ArticleExtraction | null = null;
+
+      if (looksLikeUrl) {
+        setPhase({ kind: "crawling" });
+        try {
+          crawled = await window.newsEnglish.course.crawl(trimmed);
+        } catch {
+          crawled = null;
+        }
+        payload = crawled
+          ? { text: `${crawled.title}\n\n${crawled.text}`, level }
+          : { url: trimmed, level };
+      } else {
+        payload = { text: trimmed, level };
+      }
+
+      setPhase({ kind: "generating", crawled });
       const course = await window.newsEnglish.course.generate(payload);
       await onGenerated(course);
       setInput("");
     } catch (error) {
       onError(toMessage(error));
     } finally {
-      setIsGenerating(false);
+      setPhase({ kind: "idle" });
     }
   };
 
@@ -305,15 +328,26 @@ function HomeScreen({
             </p>
             <button
               className="inline-flex h-11 items-center gap-2 rounded-lg bg-teal px-5 text-sm font-semibold text-white shadow-panel transition hover:bg-teal/90 disabled:cursor-not-allowed disabled:bg-ink/25"
-              disabled={!canGenerate || isGenerating || geminiStatus?.installed === false}
+              disabled={!canGenerate || isBusy || geminiStatus?.installed === false}
               onClick={generate}
               type="button"
             >
-              {isGenerating ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
-              {isGenerating ? "Generating" : "Generate"}
+              {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
+              {phase.kind === "crawling" ? "Crawling" : phase.kind === "generating" ? "Generating" : "Generate"}
             </button>
           </div>
-          {isGenerating ? <GenerationSkeleton /> : null}
+          {phase.kind === "crawling" ? (
+            <p className="mt-5 inline-flex items-center gap-2 text-sm text-ink/60 dark:text-slate-400">
+              <Loader2 className="animate-spin" size={16} /> Fetching article…
+            </p>
+          ) : null}
+          {phase.kind === "generating" && phase.crawled ? <CrawlLog crawled={phase.crawled} /> : null}
+          {phase.kind === "generating" && !phase.crawled && looksLikeUrl ? (
+            <p className="mt-5 text-sm text-ink/60 dark:text-slate-400">
+              Crawl failed — Gemini will analyze the URL directly.
+            </p>
+          ) : null}
+          {phase.kind === "generating" ? <GenerationSkeleton /> : null}
         </div>
       </div>
       <aside className="space-y-4">
@@ -338,6 +372,28 @@ function GenerationSkeleton(): ReactElement {
         <div key={i} className="h-4 w-full animate-pulse rounded bg-ink/10 dark:bg-white/10" style={{ width: `${90 - i * 10}%` }} />
       ))}
     </div>
+  );
+}
+
+function CrawlLog({ crawled }: { crawled: ArticleExtraction }): ReactElement {
+  const paragraphs = crawled.text.split(/\n{2,}/).filter((p) => p.trim().length > 0);
+  return (
+    <details
+      open
+      className="mt-5 rounded-lg border border-ink/10 bg-paper p-4 text-sm dark:border-white/10 dark:bg-slate-800"
+    >
+      <summary className="cursor-pointer font-semibold">
+        Crawled article — {crawled.title}
+        <span className="ml-2 text-xs font-normal text-ink/55 dark:text-slate-400">
+          {paragraphs.length} paragraphs · {crawled.text.length.toLocaleString()} chars
+        </span>
+      </summary>
+      <div className="mt-3 max-h-80 space-y-3 overflow-y-auto pr-2 leading-6 text-ink/80 dark:text-slate-300">
+        {paragraphs.map((p, i) => (
+          <p key={i}>{p}</p>
+        ))}
+      </div>
+    </details>
   );
 }
 
