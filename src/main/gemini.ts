@@ -5,18 +5,23 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   CourseLevelSchema,
+  CourseMetaSchema,
   ExerciseSchema,
   ExerciseTypeSchema,
   GeneratedCourseSchema,
   PartialVocabularyEnrichmentSchema,
+  SentenceEnrichmentSchema,
   SentenceExplanationSchema,
   SimplifiedSentenceSchema,
   type CourseLevel,
+  type CourseMeta,
+  type CourseProgressEvent,
   type ExerciseType,
   type GenerateCourseInput,
   type GeneratedCourse,
   type GeminiStatus,
   type PartialVocabularyEnrichment,
+  type SentenceEnrichment,
   type SentenceExplanation,
   type SimplifiedSentence,
   type StoredSentence,
@@ -34,8 +39,13 @@ type GeminiCommand = {
   displayPath: string;
 };
 
-const CHUNK_TARGET_CHARS = 3500;
-const SINGLE_SHOT_LIMIT = 4500;
+const META_TIMEOUT_MS = 120_000;
+const SENTENCE_TIMEOUT_MS = 90_000;
+const EXERCISES_TIMEOUT_MS = 120_000;
+const HELPER_TIMEOUT_MS = 90_000;
+const SENTENCE_CONCURRENCY = 3;
+
+export type ProgressReporter = (event: CourseProgressEvent) => void;
 
 export async function checkGemini(): Promise<GeminiStatus> {
   try {
@@ -57,135 +67,325 @@ export async function checkGemini(): Promise<GeminiStatus> {
   }
 }
 
-export async function generateCourseWithGemini(
+export async function generateCourseInTasks(
   input: GenerateCourseInput,
-  articleText: string
+  articleText: string,
+  onProgress: ProgressReporter = () => undefined
 ): Promise<GeneratedCourse> {
-  if (articleText.length > SINGLE_SHOT_LIMIT) {
-    return generateChunkedCourse(input, articleText);
-  }
-  return generateSingleShotCourse(input, articleText);
-}
+  onProgress({ step: "meta", state: "active" });
+  const meta = await generateCourseMeta(input, articleText);
+  onProgress({ step: "meta", state: "done" });
 
-async function generateSingleShotCourse(
-  input: GenerateCourseInput,
-  articleText: string
-): Promise<GeneratedCourse> {
-  const firstPrompt = buildCoursePrompt(input, articleText);
-  const first = await runGeminiJson(firstPrompt, articleText);
-  const parsed = parseGeneratedCourse(first.response ?? "");
-  if (parsed.ok) return await maybeBackfillExercises(parsed.course, input);
+  const sentences = splitArticleSentences(articleText);
+  const total = sentences.length;
+  let completed = 0;
+  let failed = 0;
+  onProgress({ step: "sentences", index: 0, total, failed: 0 });
 
-  const repairPrompt = buildRepairPrompt(first.response ?? "", parsed.error);
-  const repaired = await runGeminiJson(repairPrompt);
-  const repairedParsed = parseGeneratedCourse(repaired.response ?? "");
-  if (repairedParsed.ok) return await maybeBackfillExercises(repairedParsed.course, input);
-  throw new Error(`Gemini returned invalid course JSON: ${repairedParsed.error}`);
-}
-
-async function generateChunkedCourse(input: GenerateCourseInput, articleText: string): Promise<GeneratedCourse> {
-  const chunks = chunkArticle(articleText, CHUNK_TARGET_CHARS);
-  const chunkCourses: GeneratedCourse[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const chunkInput = { ...input };
-    const chunkText = chunks[i];
-    const isFirst = i === 0;
-    const prompt = buildCoursePrompt(chunkInput, chunkText, {
-      chunkInfo: { index: i + 1, total: chunks.length },
-      requireMetaFields: isFirst
-    });
-    const result = await runGeminiJson(prompt, chunkText);
-    const parsed = parseGeneratedCourse(result.response ?? "");
-    if (!parsed.ok) {
-      const repair = await runGeminiJson(buildRepairPrompt(result.response ?? "", parsed.error));
-      const repaired = parseGeneratedCourse(repair.response ?? "");
-      if (!repaired.ok) {
-        throw new Error(`Gemini returned invalid JSON for chunk ${i + 1}: ${repaired.error}`);
-      }
-      chunkCourses.push(repaired.course);
-    } else {
-      chunkCourses.push(parsed.course);
+  const enrichments = new Array<SentenceEnrichment | null>(total);
+  const enrichmentFailed = new Array<boolean>(total);
+  await runConcurrent(SENTENCE_CONCURRENCY, sentences, async (text, index) => {
+    try {
+      enrichments[index] = await enrichSentenceWithRetry(text, input.level, meta.summary);
+      enrichmentFailed[index] = false;
+    } catch {
+      enrichments[index] = null;
+      enrichmentFailed[index] = true;
+      failed += 1;
+    } finally {
+      completed += 1;
+      onProgress({ step: "sentences", index: completed, total, failed });
     }
-  }
-  return mergeChunkCourses(chunkCourses, input);
-}
+  });
 
-function mergeChunkCourses(chunks: GeneratedCourse[], input: GenerateCourseInput): GeneratedCourse {
-  const head = chunks[0];
-  const sentences = chunks.flatMap((c) => c.sentences);
-  const exercises = chunks.flatMap((c) => c.exercises);
-  const keyIdeas = dedupe(chunks.flatMap((c) => c.keyIdeas)).slice(0, 6);
-  const discussionQuestions = dedupe(chunks.flatMap((c) => c.discussionQuestions ?? [])).slice(0, 5);
-
-  const merged: GeneratedCourse = {
-    title: head.title,
-    articleTitle: head.articleTitle,
-    summary: head.summary,
-    simplifiedSummary: head.simplifiedSummary,
-    keyIdeas,
-    grammarFocus: head.grammarFocus,
-    tenseOverview: head.tenseOverview,
-    sentences,
-    exercises,
-    discussionQuestions: discussionQuestions.length ? discussionQuestions : undefined,
-    writingPrompt: head.writingPrompt
-  };
-  return maybeBackfillExercisesSync(merged, input);
-}
-
-function chunkArticle(text: string, target: number): string[] {
-  if (text.length <= target) return [text];
-  const paragraphs = text.split(/\n{2,}/);
-  const chunks: string[] = [];
-  let current = "";
-  for (const para of paragraphs) {
-    if ((current + "\n\n" + para).length > target && current.length > 0) {
-      chunks.push(current.trim());
-      current = para;
-    } else {
-      current = current ? `${current}\n\n${para}` : para;
-    }
-  }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks.length ? chunks : [text];
-}
-
-function dedupe(values: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const v of values) {
-    const key = v.trim().toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(v.trim());
-  }
-  return out;
-}
-
-async function maybeBackfillExercises(
-  course: GeneratedCourse,
-  input: GenerateCourseInput
-): Promise<GeneratedCourse> {
-  const requiredTypes: ExerciseType[] = ["quiz", "cloze", "matching", "true_false"];
-  const missing = requiredTypes.filter((t) => !course.exercises.some((e) => e.type === t));
-  if (!missing.length) return course;
+  onProgress({ step: "exercises", state: "active" });
+  let exercises: Array<z.infer<typeof ExerciseSchema>> = [];
   try {
-    const extras = await requestAdditionalExercises({
+    exercises = await requestAdditionalExercises({
       level: input.level,
-      summary: course.summary,
-      sentences: course.sentences.slice(0, 6).map((s) => s.english),
-      types: missing,
-      count: missing.length
+      summary: meta.summary,
+      sentences: sentences.slice(0, 6),
+      types: ["quiz", "cloze", "matching", "true_false", "reorder", "translation"],
+      count: 6
     });
-    return { ...course, exercises: [...course.exercises, ...extras] };
   } catch {
-    return course;
+    exercises = [];
+  }
+  onProgress({ step: "exercises", state: "done" });
+  onProgress({ step: "done" });
+
+  const courseSentences = sentences.map((english, index) => {
+    const enrichment = enrichments[index];
+    if (enrichment && !enrichmentFailed[index]) {
+      return {
+        english,
+        khmer: enrichment.khmer,
+        tense: enrichment.tense,
+        grammarExplanationKm: enrichment.grammarExplanationKm,
+        vocabulary: enrichment.vocabulary,
+        simplifiedEnglish: enrichment.simplifiedEnglish,
+        difficulty: enrichment.difficulty,
+        pronunciationIpa: enrichment.pronunciationIpa,
+        collocations: enrichment.collocations,
+        phrasalVerbs: enrichment.phrasalVerbs,
+        idioms: enrichment.idioms,
+        register: enrichment.register,
+        tenseFormula: enrichment.tenseFormula,
+        structuralBreakdown: enrichment.structuralBreakdown,
+        khmerSpeakerPitfallsKm: enrichment.khmerSpeakerPitfallsKm,
+        verbForms: enrichment.verbForms,
+        enrichmentFailed: false
+      };
+    }
+    return {
+      english,
+      khmer: "—",
+      tense: "Unknown",
+      grammarExplanationKm: "—",
+      vocabulary: [],
+      enrichmentFailed: true
+    };
+  });
+
+  const draft: GeneratedCourse = {
+    title: meta.title,
+    articleTitle: meta.articleTitle,
+    summary: meta.summary,
+    simplifiedSummary: meta.simplifiedSummary,
+    keyIdeas: meta.keyIdeas,
+    grammarFocus: meta.grammarFocus,
+    tenseOverview: meta.tenseOverview,
+    discussionQuestions: meta.discussionQuestions,
+    writingPrompt: meta.writingPrompt,
+    sentences: courseSentences,
+    exercises
+  };
+  return GeneratedCourseSchema.parse(draft);
+}
+
+// ---------- Task A: meta ----------
+
+export async function generateCourseMeta(
+  input: GenerateCourseInput,
+  articleText: string
+): Promise<CourseMeta> {
+  const prompt = buildMetaPrompt(input, articleText);
+  const result = await runGeminiJson(prompt, articleText, { timeoutMs: META_TIMEOUT_MS });
+  return parseMeta(result.response ?? "");
+}
+
+function buildMetaPrompt(input: GenerateCourseInput, articleText: string): string {
+  const sourceLine = input.url ? `Source URL: ${input.url}` : "Source: pasted article text";
+  return `
+You are an expert English teacher for Khmer-speaking learners.
+Produce ONLY the high-level metadata for a CEFR ${input.level} lesson built from this news article.
+${sourceLine}
+
+Return ONLY valid JSON. No markdown, no code fence, no commentary, no trailing commas.
+Match this shape exactly (omit OPTIONAL keys only if they don't apply):
+{
+  "title": "short course title",
+  "articleTitle": "original or inferred article title",
+  "summary": "2-3 sentence English overview",
+  "simplifiedSummary": "shorter, easier English summary for learners",
+  "keyIdeas": ["3-5 concise English key ideas"],
+  "grammarFocus": "1-2 sentence English overview of grammar focus",
+  "tenseOverview": "English overview of main tenses used",
+  "discussionQuestions": ["3-5 open-ended discussion questions in English"],
+  "writingPrompt": "one short writing prompt connected to the article"
+}
+
+Do NOT include sentences, vocabulary, or exercises — those are handled in later tasks.
+
+Article:
+${articleText}
+`.trim();
+}
+
+function parseMeta(raw: string): CourseMeta {
+  const cleaned = lenientCleanup(extractJson(raw));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (error) {
+    throw new Error(`Gemini meta JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return CourseMetaSchema.parse(parsed);
+}
+
+// ---------- Task B: per-sentence enrichment ----------
+
+async function enrichSentenceWithRetry(
+  sentenceText: string,
+  level: CourseLevel,
+  courseSummary: string
+): Promise<SentenceEnrichment> {
+  try {
+    return await enrichSentence(sentenceText, level, courseSummary);
+  } catch {
+    return await enrichSentence(sentenceText, level, courseSummary);
   }
 }
 
-function maybeBackfillExercisesSync(course: GeneratedCourse, _input: GenerateCourseInput): GeneratedCourse {
-  return course;
+export async function enrichSentence(
+  sentenceText: string,
+  level: CourseLevel,
+  courseSummary: string
+): Promise<SentenceEnrichment> {
+  const prompt = buildSentenceEnrichmentPrompt(sentenceText, level, courseSummary);
+  const result = await runGeminiJson(prompt, undefined, { timeoutMs: SENTENCE_TIMEOUT_MS });
+  const cleaned = lenientCleanup(extractJson(result.response ?? ""));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (error) {
+    throw new Error(`Sentence enrichment JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return SentenceEnrichmentSchema.parse(parsed);
 }
+
+function buildSentenceEnrichmentPrompt(
+  sentenceText: string,
+  level: CourseLevel,
+  courseSummary: string
+): string {
+  return `
+You are an expert English teacher for Khmer-speaking learners working on a CEFR ${level} lesson.
+Course summary: ${courseSummary}
+
+Enrich ONE English sentence with translation, grammar, and vocabulary for the learner.
+Return ONLY valid JSON. No markdown, no code fence, no commentary, no trailing commas.
+
+Match this exact shape (omit OPTIONAL keys only when truly not applicable):
+{
+  "khmer": "natural Khmer translation",
+  "tense": "tense name (e.g. Past simple, Present perfect)",
+  "grammarExplanationKm": "Khmer explanation of grammar and tense",
+  "tenseFormula": "subject + had + past participle",                            // OPTIONAL but recommended
+  "structuralBreakdown": [                                                       // OPTIONAL but recommended, 3-6 parts
+    { "part": "Subject", "english": "She", "khmer": "នាង" },
+    { "part": "Verb",    "english": "had finished", "khmer": "បានបញ្ចប់" }
+  ],
+  "khmerSpeakerPitfallsKm": "1-2 sentence Khmer note on common Khmer-speaker pitfalls (articles, verb agreement, tense markers, etc.)", // OPTIONAL but recommended
+  "verbForms": {                                                                 // ALWAYS include for the main verb
+    "base": "finish",
+    "pastSimple": "finished",
+    "pastParticiple": "finished",
+    "usedAs": "v3",
+    "khmer": "បញ្ចប់",
+    "isIrregular": false
+  },
+  "simplifiedEnglish": "easier rewrite for the learner",                         // OPTIONAL
+  "difficulty": "easy|medium|hard",                                              // OPTIONAL
+  "pronunciationIpa": "/general American IPA of the whole sentence/",           // OPTIONAL
+  "collocations": ["natural collocations found in this sentence"],              // OPTIONAL
+  "phrasalVerbs": [                                                              // OPTIONAL, only if truly present
+    { "phrase": "look into", "meaningEn": "investigate", "khmer": "ស្រាវជ្រាវ" }
+  ],
+  "idioms": [                                                                    // OPTIONAL, only if truly present
+    { "phrase": "in hot water", "meaningEn": "in trouble", "khmer": "ក្នុងបញ្ហា" }
+  ],
+  "register": "formal|neutral|informal|journalistic",                           // OPTIONAL
+  "vocabulary": [
+    {
+      "word": "important word",
+      "partOfSpeech": "noun/verb/adjective/etc",
+      "khmer": "Khmer translation",
+      "definitionEn": "simple English definition",
+      "exampleEn": "example sentence using the word",
+      "exampleKm": "Khmer translation of that example",
+      "ipa": "/general American IPA/",                                           // OPTIONAL
+      "cefrLevel": "A2|B1|B2|C1",                                                // OPTIONAL
+      "synonyms": ["..."],                                                        // OPTIONAL
+      "antonyms": ["..."],                                                        // OPTIONAL
+      "frequency": "high|mid|low",                                                // OPTIONAL
+      "collocations": ["common collocations"]                                     // OPTIONAL
+    }
+  ]
+}
+
+Level guidance (CEFR ${level}):
+${levelGuidance(level)}
+
+Requirements:
+- Translate the English sentence into natural Khmer.
+- Identify the dominant tense and explain it in Khmer.
+- Extract 2-5 useful vocabulary items actually present in the sentence.
+- Pronunciation strings MUST be wrapped in /…/ slashes.
+- Do not invent idioms or phrasal verbs that aren't really in the sentence.
+- Always include "verbForms" for the MAIN VERB of the sentence (the head verb of the main clause; for compound tenses pick the lexical verb, not the auxiliary). Provide v1 (base), v2 (past simple), v3 (past participle), and which one is actually used ("v1" | "v2" | "v3"). Set "isIrregular": true for irregular verbs (e.g. go/went/gone). Include "verbForms" even for present-simple sentences.
+- Keep JSON strings escaped correctly. No trailing commas.
+
+Sentence:
+${sentenceText}
+`.trim();
+}
+
+// ---------- Sentence splitter (no Gemini) ----------
+
+const ABBREVIATIONS = new Set([
+  "mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "inc", "co", "ltd", "no",
+  "u.s", "u.k", "e.g", "i.e", "a.m", "p.m"
+]);
+
+export function splitArticleSentences(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  const out: string[] = [];
+  const paragraphs = normalized.split(/\n{2,}/);
+  for (const paragraph of paragraphs) {
+    const collapsed = paragraph.replace(/\s+/g, " ").trim();
+    if (!collapsed) continue;
+    out.push(...splitParagraph(collapsed));
+  }
+  return out.filter((s) => s.length > 0);
+}
+
+function splitParagraph(paragraph: string): string[] {
+  const sentences: string[] = [];
+  let buffer = "";
+  for (let i = 0; i < paragraph.length; i++) {
+    const char = paragraph[i];
+    buffer += char;
+    if (char !== "." && char !== "?" && char !== "!") continue;
+    const next = paragraph[i + 1];
+    if (next && next !== " " && next !== '"' && next !== "'" && next !== "\n") continue;
+    const trimmed = buffer.trim();
+    if (!trimmed) continue;
+    const lastWord = trimmed.split(/\s+/).pop() ?? "";
+    const word = lastWord.replace(/[".)\]]+$/g, "").toLowerCase();
+    const withoutDot = word.endsWith(".") ? word.slice(0, -1) : word;
+    if (ABBREVIATIONS.has(withoutDot)) continue;
+    sentences.push(trimmed);
+    buffer = "";
+  }
+  const tail = buffer.trim();
+  if (tail) sentences.push(tail);
+  return sentences;
+}
+
+// ---------- Concurrency helper ----------
+
+async function runConcurrent<T>(
+  limit: number,
+  items: T[],
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let cursor = 0;
+  const runners: Promise<void>[] = [];
+  const launch = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      await worker(items[index], index);
+    }
+  };
+  for (let i = 0; i < Math.min(limit, items.length); i++) {
+    runners.push(launch());
+  }
+  await Promise.all(runners);
+}
+
+// ---------- Backwards-compatible parse helper (still used by tests) ----------
 
 export function parseGeneratedCourse(raw: string):
   | { ok: true; course: GeneratedCourse }
@@ -209,133 +409,24 @@ function lenientCleanup(jsonText: string): string {
 function levelGuidance(level: CourseLevel): string {
   if (level === "A2-B1") {
     return [
-      "- Simplify each sentence to short clauses (max ~14 words) while keeping the news meaning.",
+      "- Simplify the sentence to short clauses (max ~14 words) while keeping the news meaning.",
       "- Prefer top-3000 frequency vocabulary; explain anything rarer in the vocabulary list.",
       "- Use mostly present simple, past simple, and 'going to' / 'will' for futures.",
-      "- Mark sentence difficulty conservatively (most should be 'easy' or 'medium')."
+      "- Mark sentence difficulty conservatively (usually 'easy' or 'medium')."
     ].join("\n");
   }
   if (level === "B1-B2") {
     return [
-      "- Keep the journalistic phrasing but rewrite sentences over ~24 words for clarity.",
+      "- Keep journalistic phrasing but rewrite sentences over ~24 words for clarity.",
       "- Surface useful collocations and 1-2 phrasal verbs when they appear naturally.",
-      "- Cover present perfect, past continuous, conditionals, and passive voice when present.",
-      "- Difficulty mix: roughly 1 easy : 2 medium : 1 hard."
+      "- Cover present perfect, past continuous, conditionals, and passive voice when present."
     ].join("\n");
   }
   return [
     "- Preserve journalistic register including hedges, nominalisations, and reporting verbs.",
     "- Surface collocations, idioms, register notes (formal/journalistic/informal), and connotation.",
-    "- Cover advanced tense use (perfect aspects, mixed conditionals, passive reporting structures).",
-    "- Difficulty mix: roughly 1 easy : 2 medium : 2 hard."
+    "- Cover advanced tense use (perfect aspects, mixed conditionals, passive reporting structures)."
   ].join("\n");
-}
-
-export function buildCoursePrompt(
-  input: GenerateCourseInput,
-  articleText: string,
-  options: { chunkInfo?: { index: number; total: number }; requireMetaFields?: boolean } = {}
-): string {
-  const sourceLine = input.url ? `Source URL: ${input.url}` : "Source: pasted article text";
-  const chunkLine = options.chunkInfo
-    ? `This is chunk ${options.chunkInfo.index} of ${options.chunkInfo.total} of one article. Only produce sentence/vocab/exercise items for THIS chunk's text; produce one entry per sentence in this chunk; still fill in summary/keyIdeas based on this chunk.`
-    : "";
-  return `
-You are an expert English teacher for Khmer-speaking learners.
-Create a complete English lesson from this news article for CEFR level ${input.level}.
-${sourceLine}
-${chunkLine}
-
-Return ONLY valid JSON. No markdown, no code fence, no commentary, no trailing commas.
-Match this exact JSON shape (omit OPTIONAL keys only if they don't apply; do not invent idioms/phrasal verbs that aren't really in the sentence):
-{
-  "title": "short course title",
-  "articleTitle": "original or inferred article title",
-  "summary": "2-3 sentence English overview",
-  "simplifiedSummary": "shorter, easier English summary for learners",
-  "keyIdeas": ["3-5 concise English key ideas"],
-  "grammarFocus": "1-2 sentence English overview of grammar focus",
-  "tenseOverview": "English overview of main tenses used",
-  "discussionQuestions": ["3-5 open-ended discussion questions in English"],   // OPTIONAL but recommended
-  "writingPrompt": "one short writing prompt connected to the article",         // OPTIONAL but recommended
-  "sentences": [                                                                 // one entry per article sentence, in order
-    {
-      "english": "article sentence or lightly edited sentence",
-      "simplifiedEnglish": "easier rewrite for the learner",                   // OPTIONAL
-      "khmer": "Khmer translation",
-      "tense": "tense name (e.g. Past simple, Present perfect)",
-      "grammarExplanationKm": "grammar and tense explanation in Khmer",
-      "difficulty": "easy|medium|hard",                                          // OPTIONAL
-      "pronunciationIpa": "/general American IPA of the whole sentence/",       // OPTIONAL
-      "collocations": ["natural collocations found in this sentence"],          // OPTIONAL
-      "phrasalVerbs": [                                                          // OPTIONAL, only if truly present
-        { "phrase": "look into", "meaningEn": "investigate", "khmer": "ស្រាវជ្រាវ" }
-      ],
-      "idioms": [                                                                // OPTIONAL, only if truly present
-        { "phrase": "in hot water", "meaningEn": "in trouble", "khmer": "ក្នុងបញ្ហា" }
-      ],
-      "register": "formal|neutral|informal|journalistic",                       // OPTIONAL
-      "vocabulary": [
-        {
-          "word": "important word",
-          "partOfSpeech": "noun/verb/adjective/etc",
-          "khmer": "Khmer translation",
-          "definitionEn": "simple English definition",
-          "exampleEn": "example sentence using the word",
-          "exampleKm": "Khmer translation of that example",
-          "ipa": "/general American IPA/",                                       // OPTIONAL
-          "cefrLevel": "A2|B1|B2|C1",                                            // OPTIONAL
-          "synonyms": ["..."],                                                    // OPTIONAL
-          "antonyms": ["..."],                                                    // OPTIONAL
-          "frequency": "high|mid|low",                                            // OPTIONAL
-          "collocations": ["common collocations"]                                 // OPTIONAL
-        }
-      ]
-    }
-  ],
-  "exercises": [
-    { "type": "quiz",        "prompt": "comprehension question", "choices": ["A","B","C","D"], "answer": "A", "explanationKm": "..." },
-    { "type": "cloze",       "prompt": "Fill: She ____ early.",  "choices": ["leaves","left","leave"], "answer": "left", "explanationKm": "..." },
-    { "type": "matching",    "prompt": "Match the words to their meanings.", "choices": [], "answer": "see pairs",
-      "pairs": [{"left":"increase","right":"go up"}], "explanationKm": "..." },
-    { "type": "true_false",  "prompt": "Prices fell this week.", "choices": ["True","False"], "answer": "False", "explanationKm": "..." },
-    { "type": "reorder",     "prompt": "Reorder the words into a sentence.", "choices": [], "answer": "She left the office early.",
-      "items": ["She","left","the","office","early."], "explanationKm": "..." },
-    { "type": "translation", "prompt": "Translate: Markets moved quickly.", "choices": [], "answer": "ទីផ្សារបានផ្លាស់ប្តូរយ៉ាងលឿន។", "explanationKm": "..." }
-  ]
-}
-
-Level guidance (CEFR ${input.level}):
-${levelGuidance(input.level)}
-
-Requirements:
-- Produce ONE entry in "sentences" for EVERY sentence in the article (or chunk) in original order. Do not skip, merge, or summarise sentences.
-- If the article uses a long sentence joined by semicolons or "and", keep it as ONE entry — split only at full stops, question marks, or exclamation marks.
-- Section headings or photo captions in the article body count as sentences; figure credits and "Read more" links do not.
-- Translate every sentence to natural Khmer.
-- Explain grammar and tense in Khmer for every sentence.
-- Extract 2-5 vocabulary items per sentence.
-- Include at least ONE of each exercise type: quiz, cloze, matching, true_false. Add reorder and translation when they fit.
-- Pronunciation strings MUST be wrapped in /…/ slashes.
-- Keep JSON strings escaped correctly. No trailing commas.
-${options.requireMetaFields === false ? "- Title/summary/keyIdeas will be merged across chunks; still provide them for this chunk." : ""}
-
-Article:
-${articleText}
-`.trim();
-}
-
-function buildRepairPrompt(raw: string, error: string): string {
-  return `
-The previous response was invalid for this app.
-Validation error: ${error}
-
-Convert the content below into ONLY valid JSON matching the required course schema.
-No markdown. No code fence. No trailing commas. Preserve the learning content as much as possible.
-
-Previous response:
-${raw}
-`.trim();
 }
 
 // ---------- On-demand helpers ----------
@@ -352,20 +443,21 @@ export async function requestAdditionalExercises(args: {
   CourseLevelSchema.parse(args.level);
   args.types.forEach((t) => ExerciseTypeSchema.parse(t));
   const prompt = `
-You are creating extra exercises for an English-from-news lesson at CEFR ${args.level}.
+You are creating exercises for an English-from-news lesson at CEFR ${args.level}.
 
 Course summary: ${args.summary}
 Sample sentences:
 ${args.sentences.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 
-Generate exactly ${args.count} new exercises with these types: ${args.types.join(", ")}.
+Generate exactly ${args.count} new exercises covering these types: ${args.types.join(", ")}.
+Include at least one of each requested type when possible.
 Reply ONLY with JSON of the shape:
 { "exercises": [ { "type": "...", "prompt": "...", "choices": ["..."], "answer": "...", "explanationKm": "...", "pairs": [...], "items": [...] } ] }
 - Use the same exercise schema as the main course (matching has "pairs", reorder has "items").
 - explanationKm must be in Khmer.
 - No markdown, no commentary, no trailing commas.
 `.trim();
-  const result = await runGeminiJson(prompt);
+  const result = await runGeminiJson(prompt, undefined, { timeoutMs: EXERCISES_TIMEOUT_MS });
   const json = JSON.parse(lenientCleanup(extractJson(result.response ?? "")));
   const parsed = ExerciseListSchema.parse(json);
   return parsed.exercises.slice(0, args.count);
@@ -395,7 +487,7 @@ Reply ONLY with JSON matching:
 }
 All keys are optional but include as many as you confidently can. No markdown. No commentary.
 `.trim();
-  const result = await runGeminiJson(prompt);
+  const result = await runGeminiJson(prompt, undefined, { timeoutMs: HELPER_TIMEOUT_MS });
   const json = JSON.parse(lenientCleanup(extractJson(result.response ?? "")));
   return PartialVocabularyEnrichmentSchema.parse(json);
 }
@@ -414,7 +506,7 @@ Reply ONLY with JSON:
 { "simplifiedEnglish": "shorter, easier English (keep meaning)", "khmer": "Khmer translation" }
 No markdown. No commentary.
 `.trim();
-  const result = await runGeminiJson(prompt);
+  const result = await runGeminiJson(prompt, undefined, { timeoutMs: HELPER_TIMEOUT_MS });
   const json = JSON.parse(lenientCleanup(extractJson(result.response ?? "")));
   return SimplifiedSentenceSchema.parse(json);
 }
@@ -438,18 +530,26 @@ Reply ONLY with JSON:
 { "answerEn": "English answer, plain language", "answerKm": "Khmer answer" }
 No markdown. No commentary.
 `.trim();
-  const result = await runGeminiJson(prompt);
+  const result = await runGeminiJson(prompt, undefined, { timeoutMs: HELPER_TIMEOUT_MS });
   const json = JSON.parse(lenientCleanup(extractJson(result.response ?? "")));
   return SentenceExplanationSchema.parse(json);
 }
 
-// ---------- Gemini CLI plumbing (unchanged behaviour) ----------
+// ---------- Gemini CLI plumbing ----------
 
-async function runGeminiJson(prompt: string, articleText?: string): Promise<GeminiJsonResult> {
+async function runGeminiJson(
+  prompt: string,
+  articleText?: string,
+  options: { timeoutMs?: number } = {}
+): Promise<GeminiJsonResult> {
   const { promptArg, cleanup } = createPromptArg(prompt, articleText);
   try {
     const command = await resolveGeminiCommand();
-    const result = await runGeminiCommand(["-p", promptArg, "--output-format", "json"], command, 600000);
+    const result = await runGeminiCommand(
+      ["-p", promptArg, "--output-format", "json"],
+      command,
+      options.timeoutMs ?? HELPER_TIMEOUT_MS
+    );
     const parsed = JSON.parse(result.stdout) as GeminiJsonResult;
     if (parsed.error?.message) {
       throw new Error(parsed.error.message);

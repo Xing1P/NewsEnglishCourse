@@ -80,7 +80,8 @@ function mockApi(overrides: Partial<NewsEnglishApi> = {}): void {
     },
     sentence: {
       simplify: vi.fn().mockResolvedValue({ simplifiedEnglish: "Leaders talked.", khmer: "មេដឹកនាំបាននិយាយ។" }),
-      explain: vi.fn().mockResolvedValue({ answerEn: "ok", answerKm: "ok" })
+      explain: vi.fn().mockResolvedValue({ answerEn: "ok", answerKm: "ok" }),
+      enrich: vi.fn().mockResolvedValue(storedCourse.sentences[0])
     },
     review: {
       due: vi.fn().mockResolvedValue([]),
@@ -88,7 +89,8 @@ function mockApi(overrides: Partial<NewsEnglishApi> = {}): void {
       stats: vi.fn().mockResolvedValue({ dueCount: 0, reviewedToday: 0, streakDays: 0 })
     },
     system: {
-      checkGemini: vi.fn().mockResolvedValue({ installed: true, path: "gemini", version: "1.0.0", error: null })
+      checkGemini: vi.fn().mockResolvedValue({ installed: true, path: "gemini", version: "1.0.0", error: null }),
+      onCourseProgress: vi.fn().mockImplementation(() => () => undefined)
     },
     ...overrides
   } as NewsEnglishApi;

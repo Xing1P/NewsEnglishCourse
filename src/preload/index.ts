@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { IpcRendererEvent } from "electron";
 import type {
   CourseLevel,
+  CourseProgressEvent,
   ExerciseType,
   GenerateCourseInput,
   ReviewGrade,
@@ -29,7 +31,8 @@ const api: NewsEnglishApi = {
     simplify: (sentenceId: string, targetLevel: CourseLevel) =>
       ipcRenderer.invoke("sentence:simplify", { sentenceId, targetLevel }),
     explain: (sentenceId: string, question: string) =>
-      ipcRenderer.invoke("sentence:explain", { sentenceId, question })
+      ipcRenderer.invoke("sentence:explain", { sentenceId, question }),
+    enrich: (sentenceId: string) => ipcRenderer.invoke("sentence:enrich", sentenceId)
   },
   review: {
     due: () => ipcRenderer.invoke("review:due"),
@@ -38,7 +41,12 @@ const api: NewsEnglishApi = {
     stats: () => ipcRenderer.invoke("review:stats")
   },
   system: {
-    checkGemini: () => ipcRenderer.invoke("system:checkGemini")
+    checkGemini: () => ipcRenderer.invoke("system:checkGemini"),
+    onCourseProgress: (callback: (event: CourseProgressEvent) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: CourseProgressEvent): void => callback(payload);
+      ipcRenderer.on("course:progress", listener);
+      return () => ipcRenderer.removeListener("course:progress", listener);
+    }
   }
 };
 

@@ -68,6 +68,23 @@ export const VocabularyItemSchema = z.object({
   collocations: z.array(z.string()).optional()
 });
 
+export const StructuralBreakdownPartSchema = z.object({
+  part: z.string().min(1),
+  english: z.string().min(1),
+  khmer: z.string().min(1)
+});
+export type StructuralBreakdownPart = z.infer<typeof StructuralBreakdownPartSchema>;
+
+export const VerbFormsSchema = z.object({
+  base: z.string().min(1),
+  pastSimple: z.string().min(1),
+  pastParticiple: z.string().min(1),
+  usedAs: z.enum(["v1", "v2", "v3"]),
+  khmer: z.string().optional(),
+  isIrregular: z.boolean().optional()
+});
+export type VerbForms = z.infer<typeof VerbFormsSchema>;
+
 export const SentenceSchema = z.object({
   english: z.string().min(1),
   khmer: z.string().min(1),
@@ -80,7 +97,12 @@ export const SentenceSchema = z.object({
   collocations: z.array(z.string()).optional(),
   phrasalVerbs: z.array(PhrasalVerbSchema).optional(),
   idioms: z.array(IdiomSchema).optional(),
-  register: RegisterSchema.optional()
+  register: RegisterSchema.optional(),
+  tenseFormula: z.string().optional(),
+  structuralBreakdown: z.array(StructuralBreakdownPartSchema).optional(),
+  khmerSpeakerPitfallsKm: z.string().optional(),
+  verbForms: VerbFormsSchema.optional(),
+  enrichmentFailed: z.boolean().optional()
 });
 
 export const MatchingPairSchema = z.object({
@@ -164,7 +186,12 @@ export const StoredSentenceSchema = z.object({
   collocations: z.array(z.string()).optional(),
   phrasalVerbs: z.array(PhrasalVerbSchema).optional(),
   idioms: z.array(IdiomSchema).optional(),
-  register: RegisterSchema.optional()
+  register: RegisterSchema.optional(),
+  tenseFormula: z.string().optional(),
+  structuralBreakdown: z.array(StructuralBreakdownPartSchema).optional(),
+  khmerSpeakerPitfallsKm: z.string().optional(),
+  verbForms: VerbFormsSchema.optional(),
+  enrichmentFailed: z.boolean().optional()
 });
 export type StoredSentence = z.infer<typeof StoredSentenceSchema>;
 
@@ -243,3 +270,42 @@ export const SentenceExplanationSchema = z.object({
   answerKm: z.string().min(1)
 });
 export type SentenceExplanation = z.infer<typeof SentenceExplanationSchema>;
+
+export const CourseMetaSchema = z.object({
+  title: z.string().min(1),
+  articleTitle: z.string().min(1),
+  summary: z.string().min(1),
+  simplifiedSummary: z.string().min(1),
+  keyIdeas: z.array(z.string()).min(1),
+  grammarFocus: z.string().min(1),
+  tenseOverview: z.string().min(1),
+  discussionQuestions: z.array(z.string()).optional(),
+  writingPrompt: z.string().optional()
+});
+export type CourseMeta = z.infer<typeof CourseMetaSchema>;
+
+export const SentenceEnrichmentSchema = z.object({
+  khmer: z.string().min(1),
+  tense: z.string().min(1),
+  grammarExplanationKm: z.string().min(1),
+  vocabulary: z.array(VocabularyItemSchema).default([]),
+  simplifiedEnglish: z.string().optional(),
+  difficulty: SentenceDifficultySchema.optional(),
+  pronunciationIpa: z.string().optional(),
+  collocations: z.array(z.string()).optional(),
+  phrasalVerbs: z.array(PhrasalVerbSchema).optional(),
+  idioms: z.array(IdiomSchema).optional(),
+  register: RegisterSchema.optional(),
+  tenseFormula: z.string().optional(),
+  structuralBreakdown: z.array(StructuralBreakdownPartSchema).optional(),
+  khmerSpeakerPitfallsKm: z.string().optional(),
+  verbForms: VerbFormsSchema.optional()
+});
+export type SentenceEnrichment = z.infer<typeof SentenceEnrichmentSchema>;
+
+export type CourseProgressEvent =
+  | { step: "meta"; state: "active" | "done" }
+  | { step: "sentences"; index: number; total: number; failed: number }
+  | { step: "exercises"; state: "active" | "done" }
+  | { step: "done" }
+  | { step: "error"; message: string };

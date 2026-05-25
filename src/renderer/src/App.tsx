@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ArticleExtraction,
   CourseLevel,
+  CourseProgressEvent,
   CourseSummary,
   ExerciseType,
   GenerateCourseInput,
@@ -34,7 +35,8 @@ import type {
   ReviewStats,
   StoredCourse,
   StoredSentence,
-  StoredVocabulary
+  StoredVocabulary,
+  VerbForms
 } from "../../shared/schemas";
 
 type Page = "home" | "courses" | "vocabulary" | "review" | "settings" | "course";
@@ -240,6 +242,8 @@ function NavButton({
 type GeneratePhase =
   | { kind: "idle" }
   | { kind: "crawling" }
+  | { kind: "crawled"; article: ArticleExtraction }
+  | { kind: "crawl_failed"; message: string }
   | { kind: "generating"; crawled: ArticleExtraction | null };
 
 function HomeScreen({
@@ -254,39 +258,99 @@ function HomeScreen({
   const [input, setInput] = useState("");
   const [level, setLevel] = useState<CourseLevel>("B1-B2");
   const [phase, setPhase] = useState<GeneratePhase>({ kind: "idle" });
+  const [progress, setProgress] = useState<GenerationProgress>(initialProgress);
   const trimmed = input.trim();
   const looksLikeUrl = /^https?:\/\//i.test(trimmed);
   const canGenerate = trimmed.length > 20 || looksLikeUrl;
-  const isBusy = phase.kind !== "idle";
+  const isBusy = phase.kind === "crawling" || phase.kind === "generating";
 
-  const generate = async (): Promise<void> => {
-    if (!canGenerate) return;
+  useEffect(() => {
+    const unsubscribe = window.newsEnglish.system.onCourseProgress((event) => {
+      setProgress((prev) => applyProgress(prev, event));
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const resetToIdle = (): void => {
+    setPhase({ kind: "idle" });
+  };
+
+  const startCrawl = async (): Promise<void> => {
+    if (!looksLikeUrl) return;
     onError("");
+    setPhase({ kind: "crawling" });
     try {
-      let payload: GenerateCourseInput;
-      let crawled: ArticleExtraction | null = null;
-
-      if (looksLikeUrl) {
-        setPhase({ kind: "crawling" });
-        try {
-          crawled = await window.newsEnglish.course.crawl(trimmed);
-        } catch {
-          crawled = null;
-        }
-        payload = crawled
-          ? { text: `${crawled.title}\n\n${crawled.text}`, level }
-          : { url: trimmed, level };
+      const article = await window.newsEnglish.course.crawl(trimmed);
+      if (article) {
+        setPhase({ kind: "crawled", article });
       } else {
-        payload = { text: trimmed, level };
+        setPhase({ kind: "crawl_failed", message: "Couldn't fetch this URL." });
       }
+    } catch (error) {
+      setPhase({ kind: "crawl_failed", message: toMessage(error) });
+    }
+  };
 
-      setPhase({ kind: "generating", crawled });
+  const runGenerate = async (payload: GenerateCourseInput, crawled: ArticleExtraction | null): Promise<void> => {
+    onError("");
+    setProgress(initialProgress);
+    setPhase({ kind: "generating", crawled });
+    try {
       const course = await window.newsEnglish.course.generate(payload);
       await onGenerated(course);
       setInput("");
+      setPhase({ kind: "idle" });
     } catch (error) {
       onError(toMessage(error));
-    } finally {
+      setPhase({ kind: "idle" });
+    }
+  };
+
+  const continueGenerate = async (): Promise<void> => {
+    if (phase.kind === "crawled") {
+      const article = phase.article;
+      await runGenerate({ text: `${article.title}\n\n${article.text}`, level }, article);
+      return;
+    }
+    if (!looksLikeUrl) {
+      await runGenerate({ text: trimmed, level }, null);
+    }
+  };
+
+  const primaryAction = (): void => {
+    if (phase.kind === "crawled") {
+      void continueGenerate();
+      return;
+    }
+    if (phase.kind === "crawl_failed") {
+      void startCrawl();
+      return;
+    }
+    if (looksLikeUrl) {
+      void startCrawl();
+      return;
+    }
+    void continueGenerate();
+  };
+
+  const primaryLabel =
+    phase.kind === "crawling"
+      ? "Crawling"
+      : phase.kind === "generating"
+        ? "Generating"
+        : phase.kind === "crawled"
+          ? "Continue"
+          : phase.kind === "crawl_failed"
+            ? "Retry"
+            : looksLikeUrl
+              ? "Crawl"
+              : "Generate";
+
+  const handleInputChange = (value: string): void => {
+    setInput(value);
+    if (phase.kind === "crawled" || phase.kind === "crawl_failed") {
       setPhase({ kind: "idle" });
     }
   };
@@ -317,37 +381,50 @@ function HomeScreen({
           </div>
           <textarea
             id="article-input"
-            className="min-h-80 w-full resize-none rounded-lg border border-ink/15 bg-paper p-4 text-sm leading-6 text-ink placeholder:text-ink/35 dark:border-white/10 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
+            className="min-h-80 w-full resize-none rounded-lg border border-ink/15 bg-paper p-4 text-sm leading-6 text-ink placeholder:text-ink/35 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/10 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
             placeholder="Paste a news article, or enter https://..."
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => handleInputChange(event.target.value)}
+            readOnly={isBusy}
           />
           <div className="mt-4 flex items-center justify-between gap-4">
             <p className="text-sm text-ink/55 dark:text-slate-400">
               {looksLikeUrl ? "URL mode" : `${trimmed.length.toLocaleString()} characters`}
             </p>
-            <button
-              className="inline-flex h-11 items-center gap-2 rounded-lg bg-teal px-5 text-sm font-semibold text-white shadow-panel transition hover:bg-teal/90 disabled:cursor-not-allowed disabled:bg-ink/25"
-              disabled={!canGenerate || isBusy || geminiStatus?.installed === false}
-              onClick={generate}
-              type="button"
-            >
-              {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
-              {phase.kind === "crawling" ? "Crawling" : phase.kind === "generating" ? "Generating" : "Generate"}
-            </button>
+            <div className="flex items-center gap-2">
+              {phase.kind === "crawled" ? (
+                <button
+                  className="inline-flex h-11 items-center gap-2 rounded-lg border border-ink/15 bg-white px-4 text-sm font-semibold text-ink/75 transition hover:bg-ink/5 dark:border-white/10 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-white/5"
+                  onClick={resetToIdle}
+                  type="button"
+                >
+                  Back
+                </button>
+              ) : null}
+              <button
+                className="inline-flex h-11 items-center gap-2 rounded-lg bg-teal px-5 text-sm font-semibold text-white shadow-panel transition hover:bg-teal/90 disabled:cursor-not-allowed disabled:bg-ink/25"
+                disabled={!canGenerate || isBusy || geminiStatus?.installed === false}
+                onClick={primaryAction}
+                type="button"
+              >
+                {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
+                {primaryLabel}
+              </button>
+            </div>
           </div>
           {phase.kind === "crawling" ? (
             <p className="mt-5 inline-flex items-center gap-2 text-sm text-ink/60 dark:text-slate-400">
               <Loader2 className="animate-spin" size={16} /> Fetching article…
             </p>
           ) : null}
-          {phase.kind === "generating" && phase.crawled ? <CrawlLog crawled={phase.crawled} /> : null}
-          {phase.kind === "generating" && !phase.crawled && looksLikeUrl ? (
-            <p className="mt-5 text-sm text-ink/60 dark:text-slate-400">
-              Crawl failed — Gemini will analyze the URL directly.
+          {phase.kind === "crawl_failed" ? (
+            <p className="mt-5 inline-flex items-center gap-2 rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">
+              {phase.message || "Couldn't fetch this URL."}
             </p>
           ) : null}
-          {phase.kind === "generating" ? <GenerationSkeleton /> : null}
+          {phase.kind === "crawled" ? <CrawlLog crawled={phase.article} /> : null}
+          {phase.kind === "generating" && phase.crawled ? <CrawlLog crawled={phase.crawled} /> : null}
+          {phase.kind === "generating" ? <ProgressChecklist progress={progress} /> : null}
         </div>
       </div>
       <aside className="space-y-4">
@@ -362,6 +439,93 @@ function HomeScreen({
         </InfoPanel>
       </aside>
     </section>
+  );
+}
+
+type StepState = "pending" | "active" | "done";
+
+type GenerationProgress = {
+  meta: StepState;
+  sentences: { state: StepState; index: number; total: number; failed: number };
+  exercises: StepState;
+};
+
+const initialProgress: GenerationProgress = {
+  meta: "active",
+  sentences: { state: "pending", index: 0, total: 0, failed: 0 },
+  exercises: "pending"
+};
+
+function applyProgress(prev: GenerationProgress, event: CourseProgressEvent): GenerationProgress {
+  if (event.step === "meta") {
+    return { ...prev, meta: event.state === "done" ? "done" : "active" };
+  }
+  if (event.step === "sentences") {
+    const done = event.total > 0 && event.index >= event.total;
+    return {
+      ...prev,
+      meta: "done",
+      sentences: {
+        state: done ? "done" : "active",
+        index: event.index,
+        total: event.total,
+        failed: event.failed
+      }
+    };
+  }
+  if (event.step === "exercises") {
+    return {
+      ...prev,
+      meta: "done",
+      sentences: { ...prev.sentences, state: "done" },
+      exercises: event.state === "done" ? "done" : "active"
+    };
+  }
+  if (event.step === "done") {
+    return {
+      meta: "done",
+      sentences: { ...prev.sentences, state: "done" },
+      exercises: "done"
+    };
+  }
+  return prev;
+}
+
+function ProgressChecklist({ progress }: { progress: GenerationProgress }): ReactElement {
+  return (
+    <div className="mt-5 space-y-2 rounded-lg border border-ink/10 bg-paper p-4 text-sm dark:border-white/10 dark:bg-slate-800">
+      <ProgressStep state={progress.meta} label="Course outline" />
+      <ProgressStep
+        state={progress.sentences.state}
+        label="Sentences"
+        detail={
+          progress.sentences.total > 0
+            ? `${progress.sentences.index} / ${progress.sentences.total}${progress.sentences.failed > 0 ? ` · ${progress.sentences.failed} failed` : ""}`
+            : undefined
+        }
+      />
+      <ProgressStep state={progress.exercises} label="Exercises" />
+    </div>
+  );
+}
+
+function ProgressStep({ state, label, detail }: { state: StepState; label: string; detail?: string }): ReactElement {
+  return (
+    <div className="flex items-center gap-3">
+      <span
+        className={`grid h-6 w-6 place-items-center rounded-full text-xs font-bold ${
+          state === "done"
+            ? "bg-teal text-white"
+            : state === "active"
+              ? "bg-gold/30 text-ink dark:text-slate-100"
+              : "bg-ink/10 text-ink/45 dark:bg-white/5 dark:text-slate-500"
+        }`}
+      >
+        {state === "done" ? <CheckCircle2 size={14} /> : state === "active" ? <Loader2 className="animate-spin" size={13} /> : ""}
+      </span>
+      <span className={`flex-1 ${state === "pending" ? "text-ink/50 dark:text-slate-500" : ""}`}>{label}</span>
+      {detail ? <span className="text-xs text-ink/55 dark:text-slate-400">{detail}</span> : null}
+    </div>
   );
 }
 
@@ -574,6 +738,18 @@ function CourseScreen({
     }
   };
 
+  const retryEnrich = async (sentence: StoredSentence): Promise<void> => {
+    setBusy(`enrich-${sentence.id}`);
+    try {
+      await window.newsEnglish.sentence.enrich(sentence.id);
+      await onCourseChanged();
+    } catch (error) {
+      onError(toMessage(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const deepen = async (word: StoredVocabulary): Promise<void> => {
     setBusy(`deepen-${word.id}`);
     try {
@@ -634,6 +810,8 @@ function CourseScreen({
         </div>
       </div>
 
+      <OriginalArticle course={course} />
+
       <section className="mt-6 grid gap-4 lg:grid-cols-3">
         <InfoPanel title="Key ideas" icon={<Sparkles size={18} />}>
           <ul className="space-y-2">
@@ -689,86 +867,103 @@ function CourseScreen({
               <div className="grid h-9 w-9 place-items-center rounded-lg bg-paper text-sm font-semibold text-ink/60 dark:bg-white/5 dark:text-slate-300">
                 {index + 1}
               </div>
-              <div>
-                <div className="flex items-start gap-2">
-                  <p className="text-base font-semibold leading-7 flex-1">{sentence.english}</p>
-                  <SpeakButton text={sentence.english} />
-                </div>
-                {sentence.simplifiedEnglish ? (
-                  <p className="mt-1 text-sm italic text-ink/60 dark:text-slate-400">
-                    Simplified: {sentence.simplifiedEnglish}
-                  </p>
-                ) : null}
-                {sentence.pronunciationIpa ? (
-                  <p className="mt-1 text-xs text-ink/45 dark:text-slate-500">{sentence.pronunciationIpa}</p>
-                ) : null}
-                <p className="khmer-text mt-2 text-base text-ink/75 dark:text-slate-300">{sentence.khmer}</p>
-
-                {sentence.collocations?.length ? (
-                  <p className="mt-2 text-xs text-ink/60 dark:text-slate-400">
-                    <span className="font-semibold">Collocations:</span> {sentence.collocations.join(", ")}
-                  </p>
-                ) : null}
-                {sentence.phrasalVerbs?.length ? (
-                  <div className="mt-2 space-y-1 text-xs">
-                    {sentence.phrasalVerbs.map((p) => (
-                      <p key={p.phrase}>
-                        <span className="font-semibold">{p.phrase}</span> — {p.meaningEn}{" "}
-                        <span className="khmer-text text-ink/60 dark:text-slate-400">({p.khmer})</span>
-                      </p>
-                    ))}
-                  </div>
-                ) : null}
-                {sentence.idioms?.length ? (
-                  <div className="mt-2 space-y-1 text-xs">
-                    {sentence.idioms.map((i) => (
-                      <p key={i.phrase}>
-                        <span className="font-semibold italic">{i.phrase}</span> — {i.meaningEn}{" "}
-                        <span className="khmer-text text-ink/60 dark:text-slate-400">({i.khmer})</span>
-                      </p>
-                    ))}
-                  </div>
-                ) : null}
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {sentence.vocabulary.map((item) => (
+              {sentence.enrichmentFailed ? (
+                <div className="lg:col-span-2">
+                  <p className="text-base font-semibold leading-7">{sentence.english}</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-coral/30 bg-coral/10 p-3 text-sm text-coral">
+                    <span>This sentence couldn't be enriched during generation.</span>
                     <button
-                      key={item.id}
-                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
-                        item.isBookmarked
-                          ? "border-teal/30 bg-teal/10 text-teal"
-                          : "border-ink/10 bg-paper text-ink/60 dark:border-white/10 dark:bg-white/5 dark:text-slate-300"
-                      }`}
-                      onClick={async () => {
-                        await toggleVocabulary(item);
-                      }}
                       type="button"
-                      title={item.khmer}
+                      onClick={() => retryEnrich(sentence)}
+                      disabled={busy === `enrich-${sentence.id}`}
+                      className="inline-flex h-8 items-center gap-2 rounded-lg bg-coral px-3 text-xs font-semibold text-white disabled:opacity-60"
                     >
-                      {item.word}
+                      {busy === `enrich-${sentence.id}` ? <Loader2 className="animate-spin" size={12} /> : <Zap size={12} />}
+                      Retry
                     </button>
-                  ))}
+                  </div>
                 </div>
-                {!sentence.simplifiedEnglish ? (
-                  <button
-                    type="button"
-                    onClick={() => simplify(sentence)}
-                    disabled={busy === `simplify-${sentence.id}`}
-                    className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-teal hover:underline disabled:opacity-50"
-                  >
-                    {busy === `simplify-${sentence.id}` ? <Loader2 className="animate-spin" size={12} /> : <Zap size={12} />}
-                    Simplify
-                  </button>
-                ) : null}
-              </div>
-              <div className="rounded-lg bg-paper p-4 dark:bg-white/5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge>{sentence.tense}</Badge>
-                  {sentence.difficulty ? <Badge>{sentence.difficulty}</Badge> : null}
-                  {sentence.register ? <Badge>{sentence.register}</Badge> : null}
-                </div>
-                <p className="khmer-text mt-3 text-sm text-ink/70 dark:text-slate-300">{sentence.grammarExplanationKm}</p>
-              </div>
+              ) : (
+                <>
+                  <div>
+                    <div className="flex items-start gap-2">
+                      <p className="text-base font-semibold leading-7 flex-1">{sentence.english}</p>
+                      <SpeakButton text={sentence.english} />
+                    </div>
+                    {sentence.simplifiedEnglish ? (
+                      <p className="mt-1 text-sm italic text-ink/60 dark:text-slate-400">
+                        Simplified: {sentence.simplifiedEnglish}
+                      </p>
+                    ) : null}
+                    {sentence.pronunciationIpa ? (
+                      <p className="mt-1 text-xs text-ink/45 dark:text-slate-500">{sentence.pronunciationIpa}</p>
+                    ) : null}
+                    <p className="khmer-text mt-2 text-base text-ink/75 dark:text-slate-300">{sentence.khmer}</p>
+
+                    {sentence.collocations?.length ? (
+                      <p className="mt-2 text-xs text-ink/60 dark:text-slate-400">
+                        <span className="font-semibold">Collocations:</span> {sentence.collocations.join(", ")}
+                      </p>
+                    ) : null}
+                    {sentence.phrasalVerbs?.length ? (
+                      <div className="mt-2 space-y-1 text-xs">
+                        {sentence.phrasalVerbs.map((p) => (
+                          <p key={p.phrase}>
+                            <span className="font-semibold">{p.phrase}</span> — {p.meaningEn}{" "}
+                            <span className="khmer-text text-ink/60 dark:text-slate-400">({p.khmer})</span>
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                    {sentence.idioms?.length ? (
+                      <div className="mt-2 space-y-1 text-xs">
+                        {sentence.idioms.map((i) => (
+                          <p key={i.phrase}>
+                            <span className="font-semibold italic">{i.phrase}</span> — {i.meaningEn}{" "}
+                            <span className="khmer-text text-ink/60 dark:text-slate-400">({i.khmer})</span>
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {sentence.vocabulary.map((item) => (
+                        <button
+                          key={item.id}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                            item.isBookmarked
+                              ? "border-teal/30 bg-teal/10 text-teal"
+                              : "border-ink/10 bg-paper text-ink/60 dark:border-white/10 dark:bg-white/5 dark:text-slate-300"
+                          }`}
+                          onClick={async () => {
+                            await toggleVocabulary(item);
+                          }}
+                          type="button"
+                          title={item.khmer}
+                        >
+                          {item.word}
+                        </button>
+                      ))}
+                    </div>
+                    {!sentence.simplifiedEnglish ? (
+                      <button
+                        type="button"
+                        onClick={() => simplify(sentence)}
+                        disabled={busy === `simplify-${sentence.id}`}
+                        className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-teal hover:underline disabled:opacity-50"
+                      >
+                        {busy === `simplify-${sentence.id}` ? <Loader2 className="animate-spin" size={12} /> : <Zap size={12} />}
+                        Simplify
+                      </button>
+                    ) : null}
+                  </div>
+                  <GrammarPanel
+                    sentence={sentence}
+                    courseSummary={course.summary}
+                    onError={onError}
+                  />
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -927,6 +1122,210 @@ function CourseScreen({
         </div>
       </section>
     </article>
+  );
+}
+
+function GrammarPanel({
+  sentence,
+  courseSummary,
+  onError
+}: {
+  sentence: StoredSentence;
+  courseSummary: string;
+  onError: (message: string) => void;
+}): ReactElement {
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [answer, setAnswer] = useState<{ answerEn: string; answerKm: string } | null>(null);
+
+  const ask = async (): Promise<void> => {
+    const trimmed = question.trim();
+    if (!trimmed || asking) return;
+    setAsking(true);
+    setAnswer(null);
+    try {
+      const result = await window.newsEnglish.sentence.explain(sentence.id, trimmed);
+      setAnswer(result);
+    } catch (error) {
+      onError(toMessage(error));
+    } finally {
+      setAsking(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg bg-paper p-4 dark:bg-white/5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge>{sentence.tense}</Badge>
+        <TenseTimelineBadge tense={sentence.tense} />
+        {sentence.difficulty ? <Badge>{sentence.difficulty}</Badge> : null}
+        {sentence.register ? <Badge>{sentence.register}</Badge> : null}
+      </div>
+      {sentence.tenseFormula ? (
+        <p className="mt-2 font-mono text-xs text-ink/65 dark:text-slate-400">{sentence.tenseFormula}</p>
+      ) : null}
+      {sentence.structuralBreakdown?.length ? (
+        <div className="mt-3 overflow-hidden rounded-lg border border-ink/10 text-xs dark:border-white/10">
+          <table className="w-full">
+            <tbody className="divide-y divide-ink/10 dark:divide-white/10">
+              {sentence.structuralBreakdown.map((part) => (
+                <tr key={`${part.part}-${part.english}`}>
+                  <td className="bg-white/40 px-2 py-1 font-semibold text-ink/65 dark:bg-white/10 dark:text-slate-300">{part.part}</td>
+                  <td className="px-2 py-1">{part.english}</td>
+                  <td className="khmer-text px-2 py-1 text-ink/65 dark:text-slate-400">{part.khmer}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {sentence.verbForms ? <VerbFormsTable forms={sentence.verbForms} /> : null}
+      <p className="khmer-text mt-3 text-sm text-ink/70 dark:text-slate-300">{sentence.grammarExplanationKm}</p>
+      {sentence.khmerSpeakerPitfallsKm ? (
+        <p className="khmer-text mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs text-coral">
+          {sentence.khmerSpeakerPitfallsKm}
+        </p>
+      ) : null}
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          className="h-9 flex-1 rounded-lg border border-ink/15 bg-white px-2 text-xs outline-none focus:border-teal dark:border-white/10 dark:bg-slate-800"
+          placeholder="Ask about this grammar…"
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              ask();
+            }
+          }}
+          disabled={asking}
+        />
+        <button
+          type="button"
+          onClick={ask}
+          disabled={asking || !question.trim()}
+          className="inline-flex h-9 items-center gap-1 rounded-lg bg-teal px-3 text-xs font-semibold text-white disabled:opacity-50"
+        >
+          {asking ? <Loader2 className="animate-spin" size={12} /> : <Sparkles size={12} />}
+          Ask
+        </button>
+      </div>
+      {answer ? (
+        <div className="mt-3 space-y-1 rounded-lg bg-white/60 px-3 py-2 text-xs dark:bg-slate-900/60">
+          <p>{answer.answerEn}</p>
+          <p className="khmer-text text-ink/70 dark:text-slate-400">{answer.answerKm}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TenseTimelineBadge({ tense }: { tense: string }): ReactElement | null {
+  const t = tense.toLowerCase();
+  if (!t || t === "unknown") return null;
+  const period = t.includes("future")
+    ? { label: "Future", glyph: "→" }
+    : t.includes("past")
+      ? { label: "Past", glyph: "←" }
+      : t.includes("present")
+        ? { label: "Present", glyph: "•" }
+        : null;
+  const aspect = t.includes("perfect continuous")
+    ? "perfect cont."
+    : t.includes("perfect")
+      ? "perfect"
+      : t.includes("continuous") || t.includes("progressive")
+        ? "continuous"
+        : "simple";
+  if (!period) return null;
+  return (
+    <span className="inline-flex h-7 items-center gap-1 rounded-lg bg-ink/5 px-2 text-xs font-semibold text-ink/70 dark:bg-white/10 dark:text-slate-300">
+      <span aria-hidden>{period.glyph}</span> {period.label} · {aspect}
+    </span>
+  );
+}
+
+function VerbFormsTable({ forms }: { forms: VerbForms }): ReactElement {
+  const cell = (label: string, value: string, key: "v1" | "v2" | "v3"): ReactElement => {
+    const active = forms.usedAs === key;
+    return (
+      <td
+        className={`px-2 py-1 ${
+          active
+            ? "bg-teal/15 font-semibold text-teal"
+            : "text-ink/75 dark:text-slate-300"
+        }`}
+      >
+        <div className="text-[10px] uppercase tracking-wide opacity-60">{label}</div>
+        <div>{value}</div>
+      </td>
+    );
+  };
+  return (
+    <div className="mt-3 overflow-hidden rounded-lg border border-ink/10 text-xs dark:border-white/10">
+      <table className="w-full">
+        <tbody>
+          <tr>
+            {cell("V1 base", forms.base, "v1")}
+            {cell("V2 past", forms.pastSimple, "v2")}
+            {cell("V3 p.part", forms.pastParticiple, "v3")}
+            {forms.khmer ? (
+              <td className="khmer-text px-2 py-1 text-ink/65 dark:text-slate-400">{forms.khmer}</td>
+            ) : null}
+            {forms.isIrregular ? (
+              <td className="px-2 py-1 text-right">
+                <span className="inline-flex items-center rounded bg-coral/15 px-1.5 py-0.5 text-[10px] font-semibold text-coral">
+                  irregular
+                </span>
+              </td>
+            ) : null}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OriginalArticle({ course }: { course: StoredCourse }): ReactElement | null {
+  const text = course.originalText?.trim();
+  if (!text) return null;
+  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const charCount = text.length.toLocaleString();
+  return (
+    <details className="mt-6 rounded-lg border border-ink/10 bg-white shadow-panel dark:border-white/10 dark:bg-slate-900">
+      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3 px-5 py-4">
+        <div className="flex items-center gap-2">
+          <FileText size={18} className="text-teal" />
+          <h2 className="text-lg font-semibold">Original article</h2>
+          {course.articleTitle ? (
+            <span className="text-sm text-ink/55 dark:text-slate-400">— {course.articleTitle}</span>
+          ) : null}
+        </div>
+        <span className="text-xs text-ink/55 dark:text-slate-400">
+          {paragraphs.length} paragraphs · {charCount} chars
+        </span>
+      </summary>
+      <div className="border-t border-ink/10 px-5 py-4 dark:border-white/10">
+        {course.sourceType === "url" && course.sourceUrl ? (
+          <p className="mb-3 break-all text-xs text-ink/55 dark:text-slate-400">
+            Source:{" "}
+            <a
+              href={course.sourceUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-semibold text-teal hover:underline"
+            >
+              {course.sourceUrl}
+            </a>
+          </p>
+        ) : null}
+        <div className="max-h-96 space-y-3 overflow-y-auto pr-2 text-sm leading-7 text-ink/80 dark:text-slate-300">
+          {paragraphs.map((p, i) => (
+            <p key={i}>{p}</p>
+          ))}
+        </div>
+      </div>
+    </details>
   );
 }
 

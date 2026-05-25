@@ -1,6 +1,7 @@
 import type {
   ArticleExtraction,
   CourseLevel,
+  CourseProgressEvent,
   CourseSummary,
   ExerciseType,
   GenerateCourseInput,
@@ -9,6 +10,7 @@ import type {
   ReviewGrade,
   ReviewStats,
   StoredCourse,
+  StoredSentence,
   StoredVocabulary,
   VocabularyListInput
 } from "./schemas";
@@ -38,6 +40,7 @@ export type VocabularyApi = {
 export type SentenceApi = {
   simplify(sentenceId: string, targetLevel: CourseLevel): Promise<{ simplifiedEnglish: string; khmer: string }>;
   explain(sentenceId: string, question: string): Promise<{ answerEn: string; answerKm: string }>;
+  enrich(sentenceId: string): Promise<StoredSentence>;
 };
 
 export type ReviewApi = {
@@ -48,6 +51,7 @@ export type ReviewApi = {
 
 export type SystemApi = {
   checkGemini(): Promise<GeminiStatus>;
+  onCourseProgress(callback: (event: CourseProgressEvent) => void): () => void;
 };
 
 export type NewsEnglishApi = {

@@ -10,10 +10,13 @@ import type {
   Register,
   ReviewCard,
   SentenceDifficulty,
+  SentenceEnrichment,
   StoredCourse,
   StoredExercise,
   StoredSentence,
   StoredVocabulary,
+  StructuralBreakdownPart,
+  VerbForms,
   VocabularyListInput
 } from "../shared/schemas";
 
@@ -51,6 +54,11 @@ type SentenceRow = {
   phrasalVerbsJson: string | null;
   idiomsJson: string | null;
   registerCode: string | null;
+  tenseFormula: string | null;
+  structuralBreakdownJson: string | null;
+  khmerSpeakerPitfallsKm: string | null;
+  enrichmentFailed: number | null;
+  verbFormsJson: string | null;
 };
 
 type VocabularyRow = {
@@ -146,8 +154,9 @@ export class CourseRepository {
       const sentenceInsert = this.db.prepare(
         `INSERT INTO sentences
           (id, courseId, sentenceOrder, english, khmer, tense, grammarExplanationKm, vocabularyIds,
-           simplifiedEnglish, difficulty, pronunciationIpa, collocationsJson, phrasalVerbsJson, idiomsJson, registerCode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           simplifiedEnglish, difficulty, pronunciationIpa, collocationsJson, phrasalVerbsJson, idiomsJson, registerCode,
+           tenseFormula, structuralBreakdownJson, khmerSpeakerPitfallsKm, enrichmentFailed, verbFormsJson)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const vocabularyInsert = this.db.prepare(
         `INSERT INTO vocabulary
@@ -179,7 +188,12 @@ export class CourseRepository {
           sentence.collocations ? JSON.stringify(sentence.collocations) : null,
           sentence.phrasalVerbs ? JSON.stringify(sentence.phrasalVerbs) : null,
           sentence.idioms ? JSON.stringify(sentence.idioms) : null,
-          sentence.register ?? null
+          sentence.register ?? null,
+          sentence.tenseFormula ?? null,
+          sentence.structuralBreakdown ? JSON.stringify(sentence.structuralBreakdown) : null,
+          sentence.khmerSpeakerPitfallsKm ?? null,
+          sentence.enrichmentFailed ? 1 : 0,
+          sentence.verbForms ? JSON.stringify(sentence.verbForms) : null
         );
 
         const vocabularyIds = sentence.vocabulary.map((item) => {
@@ -280,23 +294,7 @@ export class CourseRepository {
     const sentenceRows = this.db
       .prepare("SELECT * FROM sentences WHERE courseId = ? ORDER BY sentenceOrder ASC")
       .all(id) as SentenceRow[];
-    const sentences: StoredSentence[] = sentenceRows.map((row) => ({
-      id: row.id,
-      courseId: row.courseId,
-      order: row.sentenceOrder,
-      english: row.english,
-      khmer: row.khmer,
-      tense: row.tense,
-      grammarExplanationKm: row.grammarExplanationKm,
-      vocabulary: vocabularyBySentence.get(row.id) ?? [],
-      simplifiedEnglish: row.simplifiedEnglish ?? undefined,
-      difficulty: (row.difficulty as SentenceDifficulty | null) ?? undefined,
-      pronunciationIpa: row.pronunciationIpa ?? undefined,
-      collocations: parseStringArrayOrUndefined(row.collocationsJson),
-      phrasalVerbs: parseJsonOrUndefined<PhrasalVerb[]>(row.phrasalVerbsJson),
-      idioms: parseJsonOrUndefined<Idiom[]>(row.idiomsJson),
-      register: (row.registerCode as Register | null) ?? undefined
-    }));
+    const sentences: StoredSentence[] = sentenceRows.map((row) => sentenceRowToStored(row, vocabularyBySentence.get(row.id) ?? []));
 
     const exerciseRows = this.db
       .prepare("SELECT * FROM exercises WHERE courseId = ? ORDER BY rowid ASC")
@@ -432,23 +430,82 @@ export class CourseRepository {
          WHERE v.sentenceId = ?`
       )
       .all(sentenceId) as VocabularyRow[];
-    return {
-      id: row.id,
-      courseId: row.courseId,
-      order: row.sentenceOrder,
-      english: row.english,
-      khmer: row.khmer,
-      tense: row.tense,
-      grammarExplanationKm: row.grammarExplanationKm,
-      vocabulary: vocab.map(toVocabulary),
-      simplifiedEnglish: row.simplifiedEnglish ?? undefined,
-      difficulty: (row.difficulty as SentenceDifficulty | null) ?? undefined,
-      pronunciationIpa: row.pronunciationIpa ?? undefined,
-      collocations: parseStringArrayOrUndefined(row.collocationsJson),
-      phrasalVerbs: parseJsonOrUndefined<PhrasalVerb[]>(row.phrasalVerbsJson),
-      idioms: parseJsonOrUndefined<Idiom[]>(row.idiomsJson),
-      register: (row.registerCode as Register | null) ?? undefined
-    };
+    return sentenceRowToStored(row, vocab.map(toVocabulary));
+  }
+
+  mergeSentenceEnrichment(sentenceId: string, enrichment: SentenceEnrichment): StoredSentence | null {
+    const sentence = this.db
+      .prepare("SELECT * FROM sentences WHERE id = ?")
+      .get(sentenceId) as SentenceRow | undefined;
+    if (!sentence) return null;
+
+    const now = new Date().toISOString();
+    const newVocabularyIds: string[] = [];
+
+    const insertVocab = this.db.prepare(
+      `INSERT INTO vocabulary
+        (id, courseId, sentenceId, word, partOfSpeech, khmer, definitionEn, exampleEn, exampleKm,
+         isBookmarked, createdAt, ipa, cefrLevel, synonymsJson, antonymsJson, frequency, collocationsJson)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const deleteVocab = this.db.prepare("DELETE FROM vocabulary WHERE sentenceId = ?");
+    const updateSentence = this.db.prepare(
+      `UPDATE sentences
+       SET khmer = ?, tense = ?, grammarExplanationKm = ?, vocabularyIds = ?,
+           simplifiedEnglish = ?, difficulty = ?, pronunciationIpa = ?, collocationsJson = ?,
+           phrasalVerbsJson = ?, idiomsJson = ?, registerCode = ?,
+           tenseFormula = ?, structuralBreakdownJson = ?, khmerSpeakerPitfallsKm = ?,
+           verbFormsJson = ?,
+           enrichmentFailed = 0
+       WHERE id = ?`
+    );
+
+    const txn = this.db.transaction(() => {
+      deleteVocab.run(sentenceId);
+      for (const item of enrichment.vocabulary) {
+        const vocabId = nanoid();
+        insertVocab.run(
+          vocabId,
+          sentence.courseId,
+          sentenceId,
+          item.word,
+          item.partOfSpeech,
+          item.khmer,
+          item.definitionEn,
+          item.exampleEn,
+          item.exampleKm,
+          1,
+          now,
+          item.ipa ?? null,
+          item.cefrLevel ?? null,
+          item.synonyms ? JSON.stringify(item.synonyms) : null,
+          item.antonyms ? JSON.stringify(item.antonyms) : null,
+          item.frequency ?? null,
+          item.collocations ? JSON.stringify(item.collocations) : null
+        );
+        newVocabularyIds.push(vocabId);
+      }
+      updateSentence.run(
+        enrichment.khmer,
+        enrichment.tense,
+        enrichment.grammarExplanationKm,
+        JSON.stringify(newVocabularyIds),
+        enrichment.simplifiedEnglish ?? null,
+        enrichment.difficulty ?? null,
+        enrichment.pronunciationIpa ?? null,
+        enrichment.collocations ? JSON.stringify(enrichment.collocations) : null,
+        enrichment.phrasalVerbs ? JSON.stringify(enrichment.phrasalVerbs) : null,
+        enrichment.idioms ? JSON.stringify(enrichment.idioms) : null,
+        enrichment.register ?? null,
+        enrichment.tenseFormula ?? null,
+        enrichment.structuralBreakdown ? JSON.stringify(enrichment.structuralBreakdown) : null,
+        enrichment.khmerSpeakerPitfallsKm ?? null,
+        enrichment.verbForms ? JSON.stringify(enrichment.verbForms) : null,
+        sentenceId
+      );
+    });
+    txn();
+    return this.getSentence(sentenceId);
   }
 
   appendExercises(
@@ -634,4 +691,29 @@ function parseJsonOrUndefined<T>(value: string | null): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+function sentenceRowToStored(row: SentenceRow, vocabulary: StoredVocabulary[]): StoredSentence {
+  return {
+    id: row.id,
+    courseId: row.courseId,
+    order: row.sentenceOrder,
+    english: row.english,
+    khmer: row.khmer,
+    tense: row.tense,
+    grammarExplanationKm: row.grammarExplanationKm,
+    vocabulary,
+    simplifiedEnglish: row.simplifiedEnglish ?? undefined,
+    difficulty: (row.difficulty as SentenceDifficulty | null) ?? undefined,
+    pronunciationIpa: row.pronunciationIpa ?? undefined,
+    collocations: parseStringArrayOrUndefined(row.collocationsJson),
+    phrasalVerbs: parseJsonOrUndefined<PhrasalVerb[]>(row.phrasalVerbsJson),
+    idioms: parseJsonOrUndefined<Idiom[]>(row.idiomsJson),
+    register: (row.registerCode as Register | null) ?? undefined,
+    tenseFormula: row.tenseFormula ?? undefined,
+    structuralBreakdown: parseJsonOrUndefined<StructuralBreakdownPart[]>(row.structuralBreakdownJson),
+    khmerSpeakerPitfallsKm: row.khmerSpeakerPitfallsKm ?? undefined,
+    verbForms: parseJsonOrUndefined<VerbForms>(row.verbFormsJson),
+    enrichmentFailed: row.enrichmentFailed ? true : undefined
+  };
 }

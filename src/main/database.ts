@@ -165,6 +165,21 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_exercises_course ON exercises(courseId);
       `);
     }
+  },
+  {
+    version: 5,
+    up: (db) => {
+      addColumnIfMissing(db, "sentences", "tenseFormula", "TEXT");
+      addColumnIfMissing(db, "sentences", "structuralBreakdownJson", "TEXT");
+      addColumnIfMissing(db, "sentences", "khmerSpeakerPitfallsKm", "TEXT");
+      addColumnIfMissing(db, "sentences", "enrichmentFailed", "INTEGER NOT NULL DEFAULT 0");
+    }
+  },
+  {
+    version: 6,
+    up: (db) => {
+      addColumnIfMissing(db, "sentences", "verbFormsJson", "TEXT");
+    }
   }
 ];
 

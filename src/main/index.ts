@@ -8,8 +8,9 @@ import { extractArticleFromUrl } from "./articleExtractor";
 import {
   checkGemini,
   deepenVocabulary,
+  enrichSentence,
   explainSentence,
-  generateCourseWithGemini,
+  generateCourseInTasks,
   requestAdditionalExercises,
   simplifySentence
 } from "./gemini";
@@ -72,7 +73,7 @@ function registerIpc(): void {
     repository.deleteCourse(id);
     return { ok: true };
   });
-  ipcMain.handle("course:generate", async (_event, rawInput: unknown) => {
+  ipcMain.handle("course:generate", async (event, rawInput: unknown) => {
     const input = GenerateCourseInputSchema.parse(rawInput);
     const gemini = await checkGemini();
     if (!gemini.installed) {
@@ -90,8 +91,21 @@ function registerIpc(): void {
       }
     }
 
-    const generated = await generateCourseWithGemini(input, originalText);
-    return repository.saveGeneratedCourse(input, originalText, generated);
+    const sender = event.sender;
+    try {
+      const generated = await generateCourseInTasks(input, originalText, (progress) => {
+        if (!sender.isDestroyed()) sender.send("course:progress", progress);
+      });
+      return repository.saveGeneratedCourse(input, originalText, generated);
+    } catch (error) {
+      if (!sender.isDestroyed()) {
+        sender.send("course:progress", {
+          step: "error",
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle("course:crawl", async (_event, rawUrl: unknown) => {
@@ -186,6 +200,17 @@ function registerIpc(): void {
     const result = await simplifySentence(sentence, targetLevel);
     repository.setSentenceSimplified(payload.sentenceId, result.simplifiedEnglish);
     return result;
+  });
+
+  ipcMain.handle("sentence:enrich", async (_event, rawId: unknown) => {
+    if (typeof rawId !== "string") throw new Error("Invalid sentence id.");
+    const sentence = repository.getSentence(rawId);
+    if (!sentence) throw new Error("Sentence not found.");
+    const course = repository.getCourse(sentence.courseId);
+    const enrichment = await enrichSentence(sentence.english, course?.level ?? "B1-B2", course?.summary ?? "");
+    const updated = repository.mergeSentenceEnrichment(rawId, enrichment);
+    if (!updated) throw new Error("Sentence not found after enrichment.");
+    return updated;
   });
 
   ipcMain.handle("sentence:explain", async (_event, raw: unknown) => {
