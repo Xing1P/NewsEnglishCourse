@@ -304,7 +304,7 @@ export const SentenceEnrichmentSchema = z.object({
 export type SentenceEnrichment = z.infer<typeof SentenceEnrichmentSchema>;
 
 export type CourseProgressEvent =
-  | { step: "meta"; state: "active" | "done" }
+  | { step: "meta"; state: "active" | "done"; index?: number; total?: number }
   | { step: "sentences"; index: number; total: number; failed: number }
   | { step: "exercises"; state: "active" | "done" }
   | { step: "done" }

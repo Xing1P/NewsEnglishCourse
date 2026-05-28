@@ -40,17 +40,15 @@ type GeminiCommand = {
 };
 
 const META_TIMEOUT_MS = 120_000;
-const META_TIMEOUT_PER_1K_CHARS_MS = 6_000;
-const META_TIMEOUT_MAX_MS = 360_000;
+const META_CHUNK_CHARS = 4000;
+const META_SINGLE_CALL_MAX_CHARS = 8000;
+const META_CHUNK_CONCURRENCY = 3;
+const META_CHUNK_TIMEOUT_MS = 60_000;
+const META_CHUNK_FALLBACK_CHARS = 800;
 const SENTENCE_TIMEOUT_MS = 90_000;
 const EXERCISES_TIMEOUT_MS = 120_000;
 const HELPER_TIMEOUT_MS = 90_000;
 const SENTENCE_CONCURRENCY = 3;
-
-function metaTimeoutForArticle(articleText: string): number {
-  const scaled = META_TIMEOUT_MS + Math.ceil(articleText.length / 1000) * META_TIMEOUT_PER_1K_CHARS_MS;
-  return Math.min(scaled, META_TIMEOUT_MAX_MS);
-}
 
 export type ProgressReporter = (event: CourseProgressEvent) => void;
 
@@ -80,7 +78,7 @@ export async function generateCourseInTasks(
   onProgress: ProgressReporter = () => undefined
 ): Promise<GeneratedCourse> {
   onProgress({ step: "meta", state: "active" });
-  const meta = await generateCourseMeta(input, articleText);
+  const meta = await generateCourseMeta(input, articleText, onProgress);
   onProgress({ step: "meta", state: "done" });
 
   const sentences = splitArticleSentences(articleText);
@@ -174,11 +172,107 @@ export async function generateCourseInTasks(
 
 export async function generateCourseMeta(
   input: GenerateCourseInput,
+  articleText: string,
+  onProgress: ProgressReporter = () => undefined
+): Promise<CourseMeta> {
+  if (articleText.length <= META_SINGLE_CALL_MAX_CHARS) {
+    return generateMetaSingleCall(input, articleText);
+  }
+  const condensed = await buildCondensedArticle(input, articleText, onProgress);
+  return generateMetaSingleCall(input, condensed);
+}
+
+async function generateMetaSingleCall(
+  input: GenerateCourseInput,
   articleText: string
 ): Promise<CourseMeta> {
   const prompt = buildMetaPrompt(input, articleText);
-  const result = await runGeminiJson(prompt, articleText, { timeoutMs: metaTimeoutForArticle(articleText) });
+  const result = await runGeminiJson(prompt, articleText, { timeoutMs: META_TIMEOUT_MS });
   return parseMeta(result.response ?? "");
+}
+
+export function chunkArticle(text: string, maxChars = META_CHUNK_CHARS): string[] {
+  const sentences = splitArticleSentences(text);
+  const chunks: string[] = [];
+  let buffer = "";
+  for (const sentence of sentences) {
+    if (buffer && buffer.length + 1 + sentence.length > maxChars) {
+      chunks.push(buffer);
+      buffer = sentence;
+    } else {
+      buffer = buffer ? `${buffer} ${sentence}` : sentence;
+    }
+  }
+  if (buffer) chunks.push(buffer);
+  return chunks;
+}
+
+async function buildCondensedArticle(
+  input: GenerateCourseInput,
+  articleText: string,
+  onProgress: ProgressReporter
+): Promise<string> {
+  const chunks = chunkArticle(articleText);
+  const total = chunks.length;
+  const summaries = new Array<ChunkSummary | null>(total);
+  let completed = 0;
+  await runConcurrent(META_CHUNK_CONCURRENCY, chunks, async (chunk, index) => {
+    try {
+      summaries[index] = await summarizeChunkWithRetry(chunk, input.level);
+    } catch {
+      summaries[index] = null;
+    } finally {
+      completed += 1;
+      onProgress({ step: "meta", state: "active", index: completed, total });
+    }
+  });
+
+  const parts = chunks.map((chunk, index) => {
+    const summary = summaries[index];
+    if (summary) {
+      const lead = splitArticleSentences(chunk)[0] ?? "";
+      const keyPoints = summary.keyPoints.length > 0 ? `\nKey points: ${summary.keyPoints.join("; ")}` : "";
+      return `${lead}\n${summary.summary}${keyPoints}`.trim();
+    }
+    return chunk.slice(0, META_CHUNK_FALLBACK_CHARS);
+  });
+  return parts.join("\n\n");
+}
+
+async function summarizeChunkWithRetry(chunkText: string, level: CourseLevel): Promise<ChunkSummary> {
+  try {
+    return await summarizeChunk(chunkText, level);
+  } catch {
+    return await summarizeChunk(chunkText, level);
+  }
+}
+
+async function summarizeChunk(chunkText: string, level: CourseLevel): Promise<ChunkSummary> {
+  const prompt = buildChunkSummaryPrompt(chunkText, level);
+  const result = await runGeminiJson(prompt, undefined, { timeoutMs: META_CHUNK_TIMEOUT_MS });
+  const cleaned = lenientCleanup(extractJson(result.response ?? ""));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (error) {
+    throw new Error(`Chunk summary JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return ChunkSummarySchema.parse(parsed);
+}
+
+function buildChunkSummaryPrompt(chunkText: string, level: CourseLevel): string {
+  return `
+You are summarizing one section of a news article for a CEFR ${level} English lesson.
+Return ONLY valid JSON. No markdown, no code fence, no commentary, no trailing commas.
+Match this exact shape:
+{
+  "summary": "1-2 sentence English summary of this section",
+  "keyPoints": ["2-4 short English key points from this section"]
+}
+
+Section:
+${chunkText}
+`.trim();
 }
 
 function buildMetaPrompt(input: GenerateCourseInput, articleText: string): string {
@@ -437,6 +531,12 @@ function levelGuidance(level: CourseLevel): string {
 }
 
 // ---------- On-demand helpers ----------
+
+const ChunkSummarySchema = z.object({
+  summary: z.string().min(1),
+  keyPoints: z.array(z.string()).default([])
+});
+type ChunkSummary = z.infer<typeof ChunkSummarySchema>;
 
 const ExerciseListSchema = z.object({ exercises: z.array(ExerciseSchema).min(1) });
 

@@ -445,26 +445,29 @@ function HomeScreen({
 type StepState = "pending" | "active" | "done";
 
 type GenerationProgress = {
-  meta: StepState;
+  meta: { state: StepState; index?: number; total?: number };
   sentences: { state: StepState; index: number; total: number; failed: number };
   exercises: StepState;
 };
 
 const initialProgress: GenerationProgress = {
-  meta: "active",
+  meta: { state: "active" },
   sentences: { state: "pending", index: 0, total: 0, failed: 0 },
   exercises: "pending"
 };
 
 function applyProgress(prev: GenerationProgress, event: CourseProgressEvent): GenerationProgress {
   if (event.step === "meta") {
-    return { ...prev, meta: event.state === "done" ? "done" : "active" };
+    return {
+      ...prev,
+      meta: { state: event.state === "done" ? "done" : "active", index: event.index, total: event.total }
+    };
   }
   if (event.step === "sentences") {
     const done = event.total > 0 && event.index >= event.total;
     return {
       ...prev,
-      meta: "done",
+      meta: { state: "done" },
       sentences: {
         state: done ? "done" : "active",
         index: event.index,
@@ -476,14 +479,14 @@ function applyProgress(prev: GenerationProgress, event: CourseProgressEvent): Ge
   if (event.step === "exercises") {
     return {
       ...prev,
-      meta: "done",
+      meta: { state: "done" },
       sentences: { ...prev.sentences, state: "done" },
       exercises: event.state === "done" ? "done" : "active"
     };
   }
   if (event.step === "done") {
     return {
-      meta: "done",
+      meta: { state: "done" },
       sentences: { ...prev.sentences, state: "done" },
       exercises: "done"
     };
@@ -494,7 +497,11 @@ function applyProgress(prev: GenerationProgress, event: CourseProgressEvent): Ge
 function ProgressChecklist({ progress }: { progress: GenerationProgress }): ReactElement {
   return (
     <div className="mt-5 space-y-2 rounded-lg border border-ink/10 bg-paper p-4 text-sm dark:border-white/10 dark:bg-slate-800">
-      <ProgressStep state={progress.meta} label="Course outline" />
+      <ProgressStep
+        state={progress.meta.state}
+        label="Course outline"
+        detail={progress.meta.total ? `${progress.meta.index ?? 0} / ${progress.meta.total}` : undefined}
+      />
       <ProgressStep
         state={progress.sentences.state}
         label="Sentences"
