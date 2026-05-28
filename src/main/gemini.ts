@@ -40,10 +40,17 @@ type GeminiCommand = {
 };
 
 const META_TIMEOUT_MS = 120_000;
+const META_TIMEOUT_PER_1K_CHARS_MS = 6_000;
+const META_TIMEOUT_MAX_MS = 360_000;
 const SENTENCE_TIMEOUT_MS = 90_000;
 const EXERCISES_TIMEOUT_MS = 120_000;
 const HELPER_TIMEOUT_MS = 90_000;
 const SENTENCE_CONCURRENCY = 3;
+
+function metaTimeoutForArticle(articleText: string): number {
+  const scaled = META_TIMEOUT_MS + Math.ceil(articleText.length / 1000) * META_TIMEOUT_PER_1K_CHARS_MS;
+  return Math.min(scaled, META_TIMEOUT_MAX_MS);
+}
 
 export type ProgressReporter = (event: CourseProgressEvent) => void;
 
@@ -170,7 +177,7 @@ export async function generateCourseMeta(
   articleText: string
 ): Promise<CourseMeta> {
   const prompt = buildMetaPrompt(input, articleText);
-  const result = await runGeminiJson(prompt, articleText, { timeoutMs: META_TIMEOUT_MS });
+  const result = await runGeminiJson(prompt, articleText, { timeoutMs: metaTimeoutForArticle(articleText) });
   return parseMeta(result.response ?? "");
 }
 
