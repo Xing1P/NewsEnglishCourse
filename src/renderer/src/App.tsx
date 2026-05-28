@@ -20,7 +20,7 @@ import {
   Wand2,
   Zap
 } from "lucide-react";
-import type { ReactElement, ReactNode } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactElement, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ArticleExtraction,
@@ -595,13 +595,28 @@ function CoursesScreen({
     }
   };
 
+  const openCourseFromKeyboard = (event: ReactKeyboardEvent<HTMLElement>, id: string): void => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpen(id);
+    }
+  };
+
   return (
     <section>
       <Header eyebrow="Library" title="Generated courses" />
       <SearchBox value={query} onChange={setQuery} placeholder="Search courses" />
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
         {filtered.map((course) => (
-          <article key={course.id} className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel dark:border-white/10 dark:bg-slate-900">
+          <article
+            key={course.id}
+            className="cursor-pointer rounded-lg border border-ink/10 bg-white p-5 shadow-panel transition hover:border-teal/30 hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal dark:border-white/10 dark:bg-slate-900 dark:hover:border-teal/50"
+            onClick={() => onOpen(course.id)}
+            onKeyDown={(event) => openCourseFromKeyboard(event, course.id)}
+            role="button"
+            tabIndex={0}
+          >
             <div className="mb-3 flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-teal">{course.level}</p>
@@ -610,7 +625,10 @@ function CoursesScreen({
               <button
                 aria-label={`Delete ${course.title}`}
                 className="grid h-9 w-9 place-items-center rounded-lg text-ink/45 transition hover:bg-coral/10 hover:text-coral"
-                onClick={() => deleteCourse(course.id)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  deleteCourse(course.id);
+                }}
                 type="button"
               >
                 <Trash2 size={17} />
@@ -625,7 +643,10 @@ function CoursesScreen({
               </div>
               <button
                 className="inline-flex h-10 items-center gap-2 rounded-lg bg-ink px-4 text-sm font-semibold text-white dark:bg-white/10"
-                onClick={() => onOpen(course.id)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpen(course.id);
+                }}
                 type="button"
               >
                 View <ChevronRight size={16} />
@@ -876,7 +897,7 @@ function CourseScreen({
               </div>
               {sentence.enrichmentFailed ? (
                 <div className="lg:col-span-2">
-                  <p className="text-base font-semibold leading-7">{sentence.english}</p>
+                  <p className="english-reading max-w-3xl text-lg font-medium text-ink dark:text-slate-100">{sentence.english}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-coral/30 bg-coral/10 p-3 text-sm text-coral">
                     <span>This sentence couldn't be enriched during generation.</span>
                     <button
@@ -894,18 +915,19 @@ function CourseScreen({
                 <>
                   <div>
                     <div className="flex items-start gap-2">
-                      <p className="text-base font-semibold leading-7 flex-1">{sentence.english}</p>
+                      <p className="english-reading max-w-3xl flex-1 text-lg font-medium text-ink dark:text-slate-100">{sentence.english}</p>
                       <SpeakButton text={sentence.english} />
                     </div>
                     {sentence.simplifiedEnglish ? (
-                      <p className="mt-1 text-sm italic text-ink/60 dark:text-slate-400">
-                        Simplified: {sentence.simplifiedEnglish}
+                      <p className="english-reading mt-3 max-w-3xl text-[15px] text-ink/65 dark:text-slate-300">
+                        <span className="font-semibold text-ink/70 dark:text-slate-300">Simplified:</span>{" "}
+                        <span className="italic">{sentence.simplifiedEnglish}</span>
                       </p>
                     ) : null}
                     {sentence.pronunciationIpa ? (
-                      <p className="mt-1 text-xs text-ink/45 dark:text-slate-500">{sentence.pronunciationIpa}</p>
+                      <p className="mt-2 max-w-3xl font-mono text-[13px] leading-6 text-ink/45 dark:text-slate-500">{sentence.pronunciationIpa}</p>
                     ) : null}
-                    <p className="khmer-text mt-2 text-base text-ink/75 dark:text-slate-300">{sentence.khmer}</p>
+                    <p className="khmer-text mt-4 text-base text-ink/75 dark:text-slate-300">{sentence.khmer}</p>
 
                     {sentence.collocations?.length ? (
                       <p className="mt-2 text-xs text-ink/60 dark:text-slate-400">

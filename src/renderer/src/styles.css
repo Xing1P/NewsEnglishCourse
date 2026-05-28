@@ -36,6 +36,13 @@ select {
   word-break: break-word;
 }
 
+.english-reading {
+  font-family: "Atkinson Hyperlegible", "Aptos", "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.75;
+  letter-spacing: 0;
+  word-spacing: 0.04em;
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
