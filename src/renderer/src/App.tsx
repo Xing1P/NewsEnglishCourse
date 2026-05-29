@@ -955,24 +955,47 @@ function CourseScreen({
                       </div>
                     ) : null}
 
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {sentence.vocabulary.map((item) => (
-                        <button
-                          key={item.id}
-                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
-                            item.isBookmarked
-                              ? "border-teal/30 bg-teal/10 text-teal"
-                              : "border-ink/10 bg-paper text-ink/60 dark:border-white/10 dark:bg-white/5 dark:text-slate-300"
-                          }`}
-                          onClick={async () => {
-                            await toggleVocabulary(item);
-                          }}
-                          type="button"
-                          title={item.khmer}
-                        >
-                          {item.word}
-                        </button>
-                      ))}
+                    <div
+                      aria-label={`Sentence ${index + 1} vocabulary list`}
+                      className="mt-3 rounded-lg border border-ink/10 bg-paper p-3 dark:border-white/10 dark:bg-white/5"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-ink/45 dark:text-slate-500">Vocabulary list</p>
+                        <Badge>{sentence.vocabulary.length} words</Badge>
+                      </div>
+                      {sentence.vocabulary.length ? (
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {sentence.vocabulary.map((item) => (
+                            <div
+                              key={item.id}
+                              className="flex min-w-0 items-start justify-between gap-3 rounded-lg bg-white p-3 dark:bg-slate-900"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="break-words text-sm font-semibold text-ink dark:text-slate-100">{item.word}</p>
+                                  <SpeakButton text={item.word} small />
+                                  <Badge>{item.partOfSpeech}</Badge>
+                                </div>
+                                <p className="khmer-text mt-1 text-sm font-semibold text-teal">{item.khmer}</p>
+                              </div>
+                              <button
+                                aria-label={`${item.isBookmarked ? "Remove" : "Add"} ${item.word} bookmark from inline vocabulary list item ${index + 1}`}
+                                className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg transition ${
+                                  item.isBookmarked
+                                    ? "bg-gold/15 text-gold"
+                                    : "bg-paper text-ink/40 hover:text-gold dark:bg-white/5 dark:text-slate-400"
+                                }`}
+                                onClick={() => toggleVocabulary(item)}
+                                type="button"
+                              >
+                                <Star size={15} fill={item.isBookmarked ? "currentColor" : "none"} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-ink/55 dark:text-slate-400">No vocabulary found for this sentence.</p>
+                      )}
                     </div>
                     {!sentence.simplifiedEnglish ? (
                       <button

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -118,12 +118,28 @@ describe("App", () => {
 
     await waitFor(() => expect(window.newsEnglish.course.generate).toHaveBeenCalled());
     expect(await screen.findByText("Sentence study")).toBeInTheDocument();
+    const sentenceVocabularyList = screen.getByLabelText("Sentence 1 vocabulary list");
+    expect(within(sentenceVocabularyList).getByText("policy")).toBeInTheDocument();
+    expect(within(sentenceVocabularyList).getByText("noun")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Vocabulary" })).toBeInTheDocument();
     expect(screen.getAllByText("policy").length).toBeGreaterThan(0);
     expect(screen.getAllByText("គោលនយោបាយ").length).toBeGreaterThan(0);
     expect(screen.getByText("a plan or rule")).toBeInTheDocument();
     expect(screen.getByText("The policy changed.")).toBeInTheDocument();
     expect(screen.getByText("គោលនយោបាយបានផ្លាស់ប្តូរ។")).toBeInTheDocument();
+  });
+
+  it("toggles bookmarks from the sentence vocabulary list", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/news article or url/i), "This is a long enough article about a policy update.");
+    await user.click(screen.getByRole("button", { name: /^generate$/i }));
+
+    const sentenceVocabularyList = await screen.findByLabelText("Sentence 1 vocabulary list");
+    await user.click(within(sentenceVocabularyList).getByRole("button", { name: /Remove policy bookmark from inline vocabulary list item 1/i }));
+
+    expect(window.newsEnglish.vocabulary.setBookmarked).toHaveBeenCalledWith("word-1", false);
   });
 
   it("jumps from course vocabulary to its source sentence", async () => {
