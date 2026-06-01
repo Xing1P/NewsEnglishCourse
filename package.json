@@ -1,6 +1,6 @@
 {
   "name": "news-english-course",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Desktop app that generates Khmer-supported English courses from news articles.",
   "main": "out/main/index.js",
   "author": "Phan Piseth <phanpiseth9@gmail.com>",
