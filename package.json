@@ -3,7 +3,26 @@
   "version": "1.0.0",
   "description": "Desktop app that generates Khmer-supported English courses from news articles.",
   "main": "out/main/index.js",
-  "author": "Phan Piseth <phanpiseth9@gmail.com>",
+  "author": "Xing1P",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xing1P/NewsEnglishCourse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xing1P/NewsEnglishCourse/issues"
+  },
+  "homepage": "https://github.com/Xing1P/NewsEnglishCourse#readme",
+  "keywords": [
+    "electron",
+    "react",
+    "english-learning",
+    "khmer",
+    "news",
+    "language-learning",
+    "gemini",
+    "spaced-repetition"
+  ],
   "scripts": {
     "dev": "node scripts/electron-vite.cjs dev",
     "build": "tsc --noEmit && electron-vite build",

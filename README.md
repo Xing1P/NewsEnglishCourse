@@ -10,6 +10,10 @@ Many English learners understand classroom examples but struggle with real news 
 
 News English Course solves this by converting a news article into a guided English lesson. Each generated course helps learners read the article, understand difficult sentences, study useful vocabulary, practice with exercises, and review bookmarked words over time.
 
+## Project Status
+
+News English Course is open source and released under the MIT License. The project is intended for learners, teachers, and developers who want to improve English learning workflows for Khmer-speaking users.
+
 ## Main Features
 
 - Generate lessons from pasted article text or supported news URLs.
@@ -128,6 +132,20 @@ Run the full test suite with:
 ```bash
 npm test
 ```
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request.
+
+Good first areas include documentation, tests, article crawler improvements, export formatting, packaging reliability, and learning workflow improvements.
+
+## Security
+
+Please do not report security vulnerabilities in public issues. Email security reports to `phanpiseth9@gmail.com` and include reproduction details when possible. See [SECURITY.md](SECURITY.md).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 
 ## Notes For Contributors
 
